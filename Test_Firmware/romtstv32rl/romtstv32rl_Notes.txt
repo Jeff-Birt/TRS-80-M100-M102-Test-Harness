@@ -1,0 +1,20 @@
+romtstv32rl -   Modified romtest32 which does a looping RAM test.
+		Test will stop if a RAM fault is found 
+
+To build from VS Code:
+		cd path_to_your_files
+		./build.bat sourcefile.asm
+
+laptop: cd C:\Users\birtj\OneDrive\Vintage_Computers\Radio_Shack\TRS-80_Model_100\M100_Test_Harness\romtstv32tl
+
+desktop: cd C:\Users\Jeff.000\OneDrive\Vintage_Computers\Radio_Shack\TRS-80_Model_100\M100_Test_Harness\romtstv32tl
+
+./build.bat romtstV32rl.asm
+
+
+Start of power off test - line 4052
+Line 4053 JMP start
+
+
+
+

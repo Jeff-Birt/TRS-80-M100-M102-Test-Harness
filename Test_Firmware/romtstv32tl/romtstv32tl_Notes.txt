@@ -1,0 +1,32 @@
+romtstv32tl -   Modified romtest32 which does not do power off test
+		It does a continious loop.
+
+To build from VS Code:
+		cd path_to_your_files
+		./build.bat sourcefile.asm
+
+laptop: cd C:\Users\birtj\OneDrive\Vintage_Computers\Radio_Shack\TRS-80_Model_100\M100_Test_Harness\romtstv32tl
+
+desktop: cd C:\Users\Jeff.000\OneDrive\Vintage_Computers\Radio_Shack\TRS-80_Model_100\M100_Test_Harness\romtstv32tl
+
+./build.bat romtstV32tl.asm
+
+
+Start of RAM tests - Line 325
+
+Start of RAM Test Set 1 - Line 355
+	Start of Test RAM3 - Line 368
+	Start of Test RAM2 - Line 560
+	Start of Test RAM1 - Line 748
+	Start of Test RAM0 - Line 941
+
+Start of RAM Test Set 2 - Line 1128
+
+Stop if no RAM - Line 1287
+Could loop back to RAM test again on line 1291
+	Add lable to line 346 - bgrtest:
+	JMP bgrtst
+
+
+
+

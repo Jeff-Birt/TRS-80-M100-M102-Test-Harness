@@ -1,0 +1,3076 @@
+0001   0000             ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+0002   0000             ; $Id: ROMTST.asm $
+0003   0000             ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+0004   0000             ;
+0005   0000             ;  ROM Test firmware for use with the ROM board V2.x.
+0006   0000             ;  Uses the connection test board to complete the test harness.
+0007   0000             ;  The use of an LCD dongle test board and keyboard loop back
+0008   0000             ;  board can assist with debugging however they are not required.
+0009   0000             ;
+0010   0000             ;  Uses parts of the M100_dis_2013 data. The disassembly of the
+0011   0000             ;  M100 ROM was invaluable in producing the test firmware. The 16-bit
+0012   0000             ;  HEX number next to some routines can be used to reference into 
+0013   0000             ;  the disassembly to help understanding of the reduced routines.
+0014   0000             ;
+0015   0000             ;  Created by IS on 12 Feb 2020.
+0016   0000             ;  Updated: 
+0017   0000             ;			10 Dec 2020 - V3.1. Added LCD Dongle and keyboard
+0018   0000             ;			              Loopback board tests.
+0019   0000             ;			22 Dec 2020 - V3.2. Improved fault detection on A14-A8 
+0020   0000             ;						  RAM addresses.  
+0021   0000             ;			03 Jan 2021 - V3.2rl Just looping RAM test, halts on error Hey Birt!
+0022   0000             ;
+0023   0000             ;  Copyright © 2020 Stardust. 
+0024   0000             ;  All rights reserved.
+0025   0000             ;  Commercial use prohibited
+0026   0000             ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+0027   0000             ; TASM 
+0028   0000             ; Processor: 8080/8085
+0029   0000             ;
+0030   0000             #DEFINE VERSION .text "V3.2rl" ; Change this value to update version
+0031   0000             
+0032   0000             ;===========================================================
+0033   0000             ; Defined locations and constants
+0034   0000             ; ==========================================================
+0035   0000             ;Test Board Diagnostic LCD Settings
+0036   0000             lcddata  .equ   0001H ;Display DATA shares ROM Address space
+0037   0000             lcdins   .equ   0000H ;Display Control Register
+0038   0000             lcdwake  .equ   30H   ;Wake up LCD
+0039   0000             lcdfunc  .equ   38H   ;Set LCD 2 lines,0 5x7 Dots
+0040   0000             ;lcdon    .equ   0FH   ;Set LCD on+Cursor+Blink
+0041   0000             lcdon    .equ   0CH   ;Set LCD on no cursor
+0042   0000             lcdmode  .equ   06H   ;LCD Mode
+0043   0000             lcdclr   .equ   01H   ;Clear LCD
+0044   0000             
+0045   0000             ;RAM Location settings
+0046   0000             ramstart .equ	08000H 
+0047   0000             ramend	 .equ   0FFFFH
+0048   0000             ram0   	 .equ   0E000H ; E7FFH, EFFFH, F7FFH ;E800H, F000H, F800H
+0049   0000             ram1     .equ   0C000H ; C7FFH, CFFFH, D7FFH ;C800H, D000H, D800H
+0050   0000             ram2	 .equ   0A000H ; A7FFH, AFFFH, B7FFH ;A800H, B000H, B800H
+0051   0000             ram3     .equ 	08000H ; 87FFH, 8FFFH, 97FFH ;8800H, 9000H, 9800H
+0052   0000             
+0053   0000             ;I/O Port addresses
+0054   0000             sysreg	 .equ   080H   ; Y0 System bus Sysreg
+0055   0000             setreg	 .equ   081H   ; Y0 System bus ctlreg
+0056   0000             lptreg	 .equ   082H   ; Y0 System bus lptreg
+0057   0000             
+0058   0000             teleIO   .equ   090H   ; Y1 Answering Telephone
+0059   0000             modemIO	 .equ   0A0H   ; Y2 Modem control
+0060   0000             
+0061   0000             ;PIO registers
+0062   0000             PIOCR	 .equ   0B0H   ; Y3 PIO Control Register B8H
+0063   0000             PIOA	 .equ   0B1H   ; Y3 PIO Port A Register  B9H
+0064   0000             PIOB	 .equ   0B2H   ; Y3 PIO Port B Register  BAH
+0065   0000             PIOC	 .equ   0B3H   ; Y3 PIO Port C Register  BBH
+0066   0000             PIOT1	 .equ   0B4H   ; Y3 PIO LSB Timer        BCH
+0067   0000             PIOT2	 .equ   0B5H   ; Y3 PIO MSB Timer	    BDH
+0068   0000             
+0069   0000             UARTctrl .equ	0C0H   ; Y4 => 0xC0 - 0xCF  = UART Control
+0070   0000             UARTread .equ	0C8H   ; Serial RX 
+0071   0000             UARTsend .equ   0C8H   ; Serial TX
+0072   0000             UARTmode .equ	0D8H   ; Y5 => 0xD0 - 0xDF  = Mode setting on UART
+0073   0000             CtrlReg  .equ	0E8H   ; Y6 => 0xE0 - 0xEF  = Write to enable STROM and REMOTE, printer strobe and clock
+0074   0000             readkbd  .equ	0E8H   ; Y6 => 0xE0 - 0xEF  = Read from Keyboard
+0075   0000             scrins   .equ	0FEH   ; Y7 => 0xF0 - 0xFF  = Enable for LCD instructions, this is active HIGH
+0076   0000             scrdata  .equ	0FFH   ; Y7 => 0xF0 - 0xFF  = Enable for LCD data, this is active HIGH
+0077   0000             
+0078   0000             		.org 0
+0079   0000             ;===========================================================
+0080   0000             ; Reset Vector
+0081   0000             ; ==========================================================
+0082   0000 C3 00 10    		JMP start      ; Start of test code
+0083   0003             
+0084   0003             ; ==========================================================
+0085   0003             ; TRAP entry point
+0086   0003             ; ==========================================================
+0087   0024             		.org 24H
+0088   0024 C3 C7 15    		JMP trap      ; RAM vector for TRAP interrupt
+0089   0027 00          		NOP
+0090   0028             
+0091   0028             ; ==========================================================
+0092   0028             ; RST 5.5 -- Bar Code Reader
+0093   0028             ; ==========================================================
+0094   0028             		; .org 2CH
+0095   0028             		; DI
+0096   0028             		; JMP bcrint    ; RST 5.5 RAM Vector	
+0097   0028             	
+0098   0028             ; ==========================================================
+0099   0028             ; RST 6.5 -- RS232 character pending
+0100   0028             ; ==========================================================
+0101   0028             		; .org 34H
+0102   0028             		; DI
+0103   0028             		; JMP serint    ; RST 6.5 routine (RS232 receive interrupt)
+0104   0028             
+0105   0028             ; ==========================================================
+0106   0028             ; RST 7.5 -- Timer background task
+0107   0028             ; ==========================================================
+0108   0028             		; .org 3CH
+0109   0028             		; DI
+0110   0028             		; JMP timint      ; RST 7.5 interrupt routine
+0111   0028             	
+0112   0028             ; ==========================================================
+0113   0028             ; Used to detect when the ROM switches. 
+0114   0028             ; ==========================================================
+0115   0040             		.org 040H
+0116   0040             optromtext:
+0117   0040 4E 6F 20 4F 		.text "No Optrom"
+0117   0044 70 74 72 6F 
+0117   0048 6D 
+0118   0049 00          		.db 0
+0119   004A             
+0120   004A             ; ==========================================================
+0121   004A             ; Copyright notices 
+0122   004A             ; ==========================================================
+0123   0F38                     .org 1000H - 200
+0124   0F38             ;		.text "0123456789012345678901"
+0125   0F38             ;		.text "0123456789ABCDEF"
+0126   0F38             ;copyright notice
+0127   0F38             copynotice:
+0128   0F38             ;		.text "0123456789ABCDEF"
+0129   0F38 20 20 52 4F 		.text "  ROM Test "
+0129   0F3C 4D 20 54 65 
+0129   0F40 73 74 20 
+0130   0F43 56 33 2E 32 		VERSION
+0130   0F47 72 6C 
+0131   0F49 00          		.db 0
+0132   0F4A 28 63 29 20 		.text "(c) IS  Dec 2020"
+0132   0F4E 49 53 20 20 
+0132   0F52 44 65 63 20 
+0132   0F56 32 30 32 30 
+0133   0F5A 00          		.db 0
+0134   0F5B 4D 31 30 30 		.text "M100/102 ROM Test "
+0134   0F5F 2F 31 30 32 
+0134   0F63 20 52 4F 4D 
+0134   0F67 20 54 65 73 
+0134   0F6B 74 20 
+0135   0F6D 56 33 2E 32 		VERSION
+0135   0F71 72 6C 
+0136   0F73 00          		.db 0
+0137   0F74 43 6F 70 79 		.text "Copyright IS Dec 2020"
+0137   0F78 72 69 67 68 
+0137   0F7C 74 20 49 53 
+0137   0F80 20 44 65 63 
+0137   0F84 20 32 30 32 
+0137   0F88 30 
+0138   0F89 00          		.db 0
+0139   0F8A             		
+0140   0F8A             ; **********************************************************
+0141   0F8A             ; Start of test code
+0142   0F8A             ; **********************************************************
+0143   1000                     .org 1000h
+0144   1000             start:
+0145   1000 F3          		DI
+0146   1001             		
+0147   1001 3E 1F       		MVI A, 01FH   ; disable all interrupts
+0148   1003 30          		SIM
+0149   1004             
+0150   1004 31 00 E0    		LXI SP,ram0   ; Set the SP = E000 just in case
+0151   1007             		
+0152   1007             		;Startup delay loop, taken from M100 ROM
+0153   1007 21 10 27    		LXI H,2710H   ; Load 16-bit delay counter
+0154   100A             wait1:
+0155   100A 2B          		DCX H         ; Decrement delay counter: 6
+0156   100B 7C          		MOV A,H       ; Test count for 0: 4
+0157   100C B5          		ORA L         ; Test lower byte: 4
+0158   100D C2 0A 10    		JNZ wait1     ; wait for zero count: 7 = 21cycles = 8.54us * 10000 = 86ms
+0159   1010             
+0160   1010             ; ==========================================================
+0161   1010             ; Set up PIO just in case, use M100 ROM settings to configure
+0162   1010             ; ==========================================================
+0163   1010 3E 43       		MVI A,43H      ; Load configuration for PIO (A=OUT, B=OUT, C=IN, Stop Timer counter)
+0164   1012 D3 B0       		OUT PIOCR      ; Set PIO chip configuration
+0165   1014 3E EC       		MVI A,0ECH     ; PIO B configuration (RTS low, DTR low, SPKR=1, Serial=Modem, Keyscan col 9 enable)
+0166   1016 D3 B2       		OUT PIOB       ; Set PIO chip port B configuration
+0167   1018 3E FF       		MVI A,0FFH     ; PIO A configuration (Used for Key scan, LCD data, etc.)
+0168   101A D3 B1       		OUT PIOA       ; Initialize PIO chip port A
+0169   101C             
+0170   101C 06 03       		MVI B, 3      ; Wake UP LCD 3 times	
+0171   101E             
+0172   101E             ; ==========================================================
+0173   101E             ; Configure the diagnostic screen
+0174   101E             ; 	Assumes no RAM is available until tested
+0175   101E             ; ==========================================================
+0176   101E             		; INIT diagnostic screen
+0177   101E 21 00 00    		LXI H,lcdins  ; Load diagnostic LCD Instruction location
+0178   1021             
+0179   1021             lcdwakeup:
+0180   1021             		;diagnostic LCD WAKEUP
+0181   1021 36 30       		MVI M,lcdwake ; Wake up diagnostic LCD
+0182   1023             		
+0183   1023             		; Wait 1.1ms
+0184   1023 0E FF       		MVI C,0FFH     ; Counter 255 	
+0185   1025             delay1:
+0186   1025 0D          		DCR C          ; Decrement C: 4
+0187   1026 C2 25 10    		JNZ delay1     ; Loop until C = 0: 7 = 11 = 4.45us
+0188   1029             
+0189   1029 05          		DCR B
+0190   102A C2 21 10    		JNZ lcdwakeup
+0191   102D             
+0192   102D             		;diagnostic LCD FUNCTION SET
+0193   102D 36 38       		MVI M,lcdfunc   ; Function Set
+0194   102F             
+0195   102F             		; Wait 40us
+0196   102F 0E 0A       		MVI C,10       ; Counter 10 	
+0197   1031             delay2:
+0198   1031 0D          		DCR C          ; Decrement C: 4
+0199   1032 C2 31 10    		JNZ delay2     ; Loop until C = 0: 7 = 11 = 4.45us	
+0200   1035             		
+0201   1035             		;diagnostic LCD ON
+0202   1035 36 0C       		MVI M,lcdon    ; LCD ON			
+0203   1037             	
+0204   1037             		; Wait 40us		
+0205   1037 0E 0A       		MVI C,10       ; Counter 10 	
+0206   1039             delay3:
+0207   1039 0D          		DCR C          ; Decrement C: 4
+0208   103A C2 39 10    		JNZ delay3     ; Loop until C = 0: 7 = 11 = 4.45us
+0209   103D             
+0210   103D             		;diagnostic LCD MODE
+0211   103D 36 06       		MVI M,lcdmode  ; Set LCD mode
+0212   103F             		
+0213   103F             		; Wait 40us		
+0214   103F 0E 0A       		MVI C,10      ; Counter 10 	
+0215   1041             delay4:
+0216   1041 0D          		DCR C          ; Decrement C: 4
+0217   1042 C2 41 10    		JNZ delay4     ; Loop until C = 0: 7 = 11 = 4.45us
+0218   1045             
+0219   1045             
+0220   1045             		;diagnostic LCD CLEAR
+0221   1045 36 01       		MVI M,lcdclr   ; LCD Clear
+0222   1047             	
+0223   1047             		; Wait 1.64ms		
+0224   1047             		; Wait 800us
+0225   1047 06 02       		MVI B,2
+0226   1049             delay5s
+0227   1049 0E BE       		MVI C,190      ; Counter 190 	
+0228   104B             delay5:
+0229   104B 0D          		DCR C          ; Decrement C: 4
+0230   104C C2 4B 10    		JNZ delay5     ; Loop until C = 0: 7 = 11 = 4.45us		
+0231   104F             		
+0232   104F 05          		DCR B
+0233   1050 C2 49 10    		JNZ delay5s
+0234   1053             
+0235   1053             ; ==========================================================
+0236   1053             ; Write 'CPU ' text to Diagnostic LCD
+0237   1053             ; ==========================================================
+0238   1053 3E 8D       		MVI A,08DH      ; Set Cursor to top RH corner
+0239   1055 32 00 00    		STA lcdins      ; diagnostic  LCD Instruction
+0240   1058             		; Wait 40us		
+0241   1058 0E 0A       		MVI C,10        ; Counter 10 	
+0242   105A             delay5a:
+0243   105A 0D          		DCR C          ; Decrement C: 4
+0244   105B C2 5A 10    		JNZ delay5a    ; Loop until C = 0: 7 = 11 = 4.45us
+0245   105E             		
+0246   105E 21 01 00    		LXI H,lcddata  ; Load LCD Data location
+0247   1061 36 43       		MVI M,'C'      ; Load C to screen
+0248   1063             		
+0249   1063             		; Wait 40us		
+0250   1063 0E 0A       		MVI C,10      ; Counter 10 	
+0251   1065             delay6:
+0252   1065 0D          		DCR C          ; Decrement C: 4
+0253   1066 C2 65 10    		JNZ delay6    ; Loop until C = 0: 7 = 11 = 4.45us	
+0254   1069             		
+0255   1069 36 50       		MVI M,'P'      ; Load P to screen
+0256   106B             		
+0257   106B             		; Wait 40us		
+0258   106B 0E 0A       		MVI C,10      ; Counter 10 	
+0259   106D             delay7:
+0260   106D 0D          		DCR C          ; Decrement C: 4
+0261   106E C2 6D 10    		JNZ delay7    ; Loop until C = 0: 7 = 11 = 4.45us	
+0262   1071             
+0263   1071 36 55       		MVI M,'U'      ; Load P to screen
+0264   1073             		
+0265   1073             		; Wait 40us		
+0266   1073 0E 0A       		MVI C,10      ; Counter 10 	
+0267   1075             delay8:
+0268   1075 0D          		DCR C          ; Decrement C: 4
+0269   1076 C2 75 10    		JNZ delay8    ; Loop until C = 0: 7 = 11 = 4.45us			
+0270   1079             
+0271   1079 36 20       		MVI M,' '      ; Load space to screen
+0272   107B             		
+0273   107B             		; Wait 40us		
+0274   107B 0E 0A       		MVI C,10      ; Counter 10 	
+0275   107D             delay9:
+0276   107D 0D          		DCR C          ; Decrement C: 4
+0277   107E C2 7D 10    		JNZ delay9    ; Loop until C = 0: 7 = 11 = 4.45us	
+0278   1081             		
+0279   1081             
+0280   1081             ; ==========================================================
+0281   1081             ; Write 'RAM ?' text to Diagnostic LCD
+0282   1081             ; ==========================================================
+0283   1081 3E CC       		MVI A,0CCH      ; Set Cursor to bottom RH corner
+0284   1083 32 00 00    		STA lcdins      ; diagnostic  LCD Instruction
+0285   1086             		; Wait 40us		
+0286   1086 0E 0A       		MVI C,10        ; Counter 10 	
+0287   1088             delay9a:
+0288   1088 0D          		DCR C          ; Decrement C: 4
+0289   1089 C2 88 10    		JNZ delay9a    ; Loop until C = 0: 7 = 11 = 4.45us
+0290   108C             		
+0291   108C 21 01 00    		LXI H,lcddata  ; Load diagnostic LCD Data location
+0292   108F 36 52       		MVI M,'R'      ; Load R to diagnostic screen
+0293   1091             		
+0294   1091             		; Wait 40us		
+0295   1091 0E 0A       		MVI C,10      ; Counter 10 	
+0296   1093             delay10:
+0297   1093 0D          		DCR C          ; Decrement C: 4
+0298   1094 C2 93 10    		JNZ delay10    ; Loop until C = 0: 7 = 11 = 4.45us	
+0299   1097             		
+0300   1097 36 41       		MVI M,'A'      ; Load A to diagnostic screen
+0301   1099             		
+0302   1099             		; Wait 40us		
+0303   1099 0E 0A       		MVI C,10      ; Counter 10 	
+0304   109B             delay11:
+0305   109B 0D          		DCR C          ; Decrement C: 4
+0306   109C C2 9B 10    		JNZ delay11    ; Loop until C = 0: 7 = 11 = 4.45us	
+0307   109F             
+0308   109F 36 4D       		MVI M,'M'      ; Load M to diagnostic screen
+0309   10A1             		
+0310   10A1             		; Wait 40us		
+0311   10A1 0E 0A       		MVI C,10      ; Counter 10 	
+0312   10A3             delay12:
+0313   10A3 0D          		DCR C          ; Decrement C: 4
+0314   10A4 C2 A3 10    		JNZ delay12    ; Loop until C = 0: 7 = 11 = 4.45us			
+0315   10A7             
+0316   10A7 36 3F       		MVI M,'?'      ; Load space to diagnostic screen
+0317   10A9             		
+0318   10A9             		; Wait 40us		
+0319   10A9 0E 0A       		MVI C,10      ; Counter 10 	
+0320   10AB             delay13:
+0321   10AB 0D          		DCR C          ; Decrement C: 4
+0322   10AC C2 AB 10    		JNZ delay13   ; Loop until C = 0: 7 = 11 = 4.45us
+0323   10AF             
+0324   10AF             ; ##########################################################
+0325   10AF             ; ##########################################################		
+0326   10AF             ; **********************************************************
+0327   10AF             ; RAM TESTS
+0328   10AF             ; 	Check each RAM bank
+0329   10AF             ; 	Indicate which banks are present
+0330   10AF             ; 	Test banks that exist by writing each byte.
+0331   10AF             ; 	Indicate any failures
+0332   10AF             ; 	Once tested use the stack as part of the testing 
+0333   10AF             ;	if required
+0334   10AF             ; **********************************************************
+0335   10AF             ; Used in settings for the RAM tests
+0336   10AF             goodmemch	.equ 'm' ; LC to make it more obvious
+0337   10AF             badmemch  	.equ 'F' ; UC to make it stand out
+0338   10AF             badpagech  	.equ 'H' ; UC to make it stand out
+0339   10AF             backupch	.equ 'B'
+0340   10AF             nobackupch	.equ '.'
+0341   10AF             goodblock	.equ 'g'
+0342   10AF             backupbyte	.equ 0AAH   ; Needs to be set to the last ram test byte
+0343   10AF             
+0344   10AF             ; ==============================================================
+0345   10AF             ; Set up the cursor positions
+0346   10AF             ; ==============================================================
+0347   10AF             bgrtst:
+0348   10AF 3E 80       		MVI A,080H      ; Set Cursor to top LH corner
+0349   10B1 32 00 00    		STA lcdins      ; diagnostic  LCD Instruction
+0350   10B4             		; Wait 40us				
+0351   10B4 0E 0A       		MVI C,10        ; Counter 10 	
+0352   10B6             delay14:
+0353   10B6 0D          		DCR C          ; Decrement C: 4
+0354   10B7 C2 B6 10    		JNZ delay14    ; Loop until C = 0: 7 = 11 = 4.45us
+0355   10BA             		
+0356   10BA             ; =============================================================
+0357   10BA             ; TEST Set 1:
+0358   10BA             ;   Is made up of 3 tests:
+0359   10BA             ;   - Attempt to check the battery backup works.  Only works
+0360   10BA             ;     on second attempt.
+0361   10BA             ; 	- Test each memory location. Make sure it is OK.
+0362   10BA             ;   - Test the first 256 bytes of the RAM to check A7-A0 address
+0363   10BA             ;     lines for stuck faults.
+0364   10BA             ; ==============================================================
+0365   10BA             ; Example diagnostic screen layout
+0366   10BA             ;		.text "0123456789ABCDEF"
+0367   10BA             ;		.text ".mgg.mgg.mgg.Fgg" ; 080H
+0368   10BA             ;		.text "mmmmmmmmmmmm1mmm" ; 0C0H
+0369   10BA             
+0370   10BA             ;33333333333333333333333333333
+0371   10BA             ;*****************************
+0372   10BA             ;*** Test RAM3	
+0373   10BA             ;*****************************
+0374   10BA             ;*** Test Battery Backup 3 ***
+0375   10BA             ;*****************************
+0376   10BA             ; Check for data retention from last run should contain 0AAH
+0377   10BA 21 2C 81    		LXI H,ram3+300	 ; Standard RAM location 08064H	
+0378   10BD             		
+0379   10BD 7E          		MOV A,M
+0380   10BE FE AA       		CPI backupbyte
+0381   10C0 3E 2E       		MVI A,nobackupch
+0382   10C2 C2 C7 10    		JNZ ramblktop3
+0383   10C5 3E 42       		MVI A,backupch
+0384   10C7             				
+0385   10C7             ; Set HL to start of first RAM block location
+0386   10C7             ramblktop3:
+0387   10C7 32 01 00    		STA lcddata	
+0388   10CA             
+0389   10CA             ;*****************************
+0390   10CA             ;*** Complete memory test 3 **	
+0391   10CA             ;*****************************
+0392   10CA 21 00 80    		LXI H,ram3		 ; Standard RAM location 08000H		
+0393   10CD             								
+0394   10CD             ramblktst3:
+0395   10CD 11 A9 1B    		LXI D,ramtstdata ; Load the RAM byte test data table
+0396   10D0             tstloc3:
+0397   10D0 1A          		LDAX D   		 ; D = Current RAM byte test data
+0398   10D1 FE FE       		CPI eotramtests  ; 0FEH Check end of table
+0399   10D3 CA E0 10    		JZ nextloc3       
+0400   10D6 77          		MOV M,A			 ; Write RAM location to table entry
+0401   10D7 4E          		MOV C,M          ; Read RAM location
+0402   10D8 B9          		CMP C		     ; Compare locations
+0403   10D9 C2 F3 10    		JNZ tstfail3     ; Not equal RAM location failed
+0404   10DC 13          		INX D            ; Get next RAM test byte
+0405   10DD C3 D0 10    		JMP tstloc3      
+0406   10E0             nextloc3:                ; Move to next RAM location to test
+0407   10E0 23          		INX H            ; Addr++ count will rollover from 0FFFFH
+0408   10E1 7C          		MOV A,H          ; Check HL == 0
+0409   10E2 FE A0       		CPI 0A0H         ; Compare next block
+0410   10E4 CA EA 10    		JZ tstfin3       ; Finished testing
+0411   10E7 C2 CD 10    		JNZ ramblktst3
+0412   10EA             		
+0413   10EA             tstfin3:
+0414   10EA 3E 6D       		MVI A,goodmemch   ; Test OK
+0415   10EC 31 00 90    		LXI SP,ram3+1000H ; Memory Block + 1000H
+0416   10EF F5          		PUSH PSW          ; Put the goodmemch on the stack
+0417   10F0 C3 F5 10    		JMP exitblk3
+0418   10F3             tstfail3:
+0419   10F3 3E 46       		MVI A,badmemch    ; Test Fail
+0420   10F5             
+0421   10F5             exitblk3:
+0422   10F5 32 01 00    		STA lcddata    	 ; Load RAM # to screen
+0423   10F8             									
+0424   10F8             ;*****************************
+0425   10F8             ;*** First page RAM test 3 ***
+0426   10F8             ;*****************************
+0427   10F8 21 00 80    		LXI H,ram3	; Standard RAM location 08000H
+0428   10FB AF          		XRA A
+0429   10FC             
+0430   10FC             ; Set up the first page
+0431   10FC             fpramtst3init:
+0432   10FC 3C          		INR A
+0433   10FD 77          		MOV M,A		; Read the value
+0434   10FE 2C          		INR L		; Next one in the list
+0435   10FF C2 FC 10    		JNZ fpramtst3init   ; Keep going until done
+0436   1102             
+0437   1102             		; Wait see if memory retains contents
+0438   1102 0E C8       		MVI C,200	
+0439   1104             delayfp3:
+0440   1104 0D          		DCR C          ; Decrement C: 4
+0441   1105 C2 04 11    		JNZ delayfp3   ; Loop until C = 0: 7 = 11 = 4.45us
+0442   1108             
+0443   1108 21 00 80    		LXI H,ram3     ; Standard RAM location 08000H
+0444   110B AF          		XRA A
+0445   110C             
+0446   110C             fpramtst3:		
+0447   110C 3C          		INR A
+0448   110D BE          		CMP M		; Compare with memory
+0449   110E C2 1A 11    		JNZ fpramtst3fail 
+0450   1111             
+0451   1111 2C          		INR L		; Next one in the list
+0452   1112 C2 0C 11    		JNZ fpramtst3   ; Keep going until done
+0453   1115 3E 67       		MVI A,goodblock
+0454   1117 C3 1C 11    		JMP fpramtst3exit ; Test complete
+0455   111A             
+0456   111A             fpramtst3fail:
+0457   111A 3E 48       		MVI A,badpagech  
+0458   111C             	
+0459   111C             fpramtst3exit:
+0460   111C 32 01 00    		STA lcddata    	 ; Load RAM # to screen
+0461   111F             		
+0462   111F             ;*****************************
+0463   111F             ;****** 256byte test 3 *******	
+0464   111F             ;*****************************
+0465   111F             ramloopstart3:
+0466   111F 21 00 80    		LXI H,ram3		 ; Standard RAM location 08000H		
+0467   1122             
+0468   1122             ;Write test data to boundaries to check for SA Address lines
+0469   1122 36 08       		MVI M,8         ; Set 1st Location to 8
+0470   1124             				
+0471   1124 23          		INX H           ; Address 1
+0472   1125 36 07       		MVI M,7
+0473   1127             				
+0474   1127 21 02 80    		LXI H,ram3+002H ; Address 2
+0475   112A 36 06       		MVI M,6
+0476   112C             		
+0477   112C 21 04 80    		LXI H,ram3+004H ; Address 4
+0478   112F 36 05       		MVI M,5
+0479   1131             		
+0480   1131 21 08 80    		LXI H,ram3+008H ; Address 8
+0481   1134 36 04       		MVI M,4
+0482   1136             		
+0483   1136 21 10 80    		LXI H,ram3+010H ; Address 16
+0484   1139 36 03       		MVI M,3
+0485   113B             		
+0486   113B 21 20 80    		LXI H,ram3+020H ; Address 32
+0487   113E 36 02       		MVI M,2
+0488   1140             		
+0489   1140 21 40 80    		LXI H,ram3+040H	; Address 64
+0490   1143 36 01       		MVI M,1
+0491   1145             		
+0492   1145 21 80 80    		LXI H,ram3+080H ; Address 128
+0493   1148 36 00       		MVI M,0
+0494   114A             
+0495   114A             ;Check the contents of the tested RAM		
+0496   114A 21 00 80    		LXI H,ram3	; Standard RAM location 08000H		
+0497   114D 3E 08       		MVI A,8
+0498   114F             		
+0499   114F BE          		CMP M       ; Compare first locations				
+0500   1150 C2 96 11    		JNZ ramloop3testfail ; Test failed
+0501   1153             
+0502   1153 23          		INX H       ; Address 1		
+0503   1154 3D          		DCR A
+0504   1155 BE          		CMP M       ; Compare Address 1			
+0505   1156 C2 96 11    		JNZ ramloop3testfail ; Test failed
+0506   1159             
+0507   1159 3D          		DCR A				
+0508   115A 21 02 80    		LXI H,ram3+002H ; Address 2
+0509   115D BE          		CMP M           ; Compare Address 2		
+0510   115E C2 96 11    		JNZ ramloop3testfail ; Test failed
+0511   1161             
+0512   1161 3D          		DCR A				
+0513   1162 21 04 80    		LXI H,ram3+004H ; Address 4
+0514   1165 BE          		CMP M           ; Compare Address 4		
+0515   1166 C2 96 11    		JNZ ramloop3testfail ; Test failed
+0516   1169             		
+0517   1169 3D          		DCR A				
+0518   116A 21 08 80    		LXI H,ram3+008H ; Address 8
+0519   116D BE          		CMP M           ; Compare Address 8	
+0520   116E C2 96 11    		JNZ ramloop3testfail ; Test failed
+0521   1171             		
+0522   1171 3D          		DCR A				
+0523   1172 21 10 80    		LXI H,ram3+010H ; Address 16
+0524   1175 BE          		CMP M           ; Compare Address 16		
+0525   1176 C2 96 11    		JNZ ramloop3testfail ; Test failed
+0526   1179             		
+0527   1179 3D          		DCR A				
+0528   117A 21 20 80    		LXI H,ram3+020H ; Address 32
+0529   117D BE          		CMP M           ; Compare Address 32		
+0530   117E C2 96 11    		JNZ ramloop3testfail ; Test failed
+0531   1181             		
+0532   1181 3D          		DCR A				
+0533   1182 21 40 80    		LXI H,ram3+040H ; Address 64
+0534   1185 BE          		CMP M           ; Compare Address 64		
+0535   1186 C2 96 11    		JNZ ramloop3testfail ; Test failed
+0536   1189             		
+0537   1189 3D          		DCR A				
+0538   118A 21 80 80    		LXI H,ram3+080H ; Address 128
+0539   118D BE          		CMP M           ; Compare Address 128		
+0540   118E C2 96 11    		JNZ ramloop3testfail ; Test failed		
+0541   1191             
+0542   1191             		;Test successful
+0543   1191 3E 67       		MVI A,goodblock		
+0544   1193 C3 9C 11    		JMP ramloop3testend		
+0545   1196             		
+0546   1196             ramloop3testfail:
+0547   1196 4F          		MOV C,A
+0548   1197 3E 08       		MVI A,8
+0549   1199 91          		SUB C
+0550   119A C6 30       		ADI '0'  		
+0551   119C             
+0552   119C             ramloop3testend:
+0553   119C 32 01 00    		STA lcddata
+0554   119F             
+0555   119F             
+0556   119F             		; Wait 40us				
+0557   119F 0E 0A       		MVI C,10        ; Counter 10 	
+0558   11A1             delayr3:
+0559   11A1 0D          		DCR C          ; Decrement C: 4
+0560   11A2 C2 A1 11    		JNZ delayr3    ; Loop until C = 0: 7 = 11 = 4.45us	
+0561   11A5             
+0562   11A5             ;22222222222222222222222222222
+0563   11A5             ;*****************************
+0564   11A5             ;*** Test RAM2	
+0565   11A5             ;*****************************
+0566   11A5             ;*** Test Battery Backup 2 ***
+0567   11A5             ;*****************************
+0568   11A5             ; Check for data retention from last run should contain 0AAH
+0569   11A5 21 2C A1    		LXI H,ram2+300	 ; Standard RAM location 0A064H	
+0570   11A8             		
+0571   11A8 7E          		MOV A,M
+0572   11A9 FE AA       		CPI backupbyte
+0573   11AB 3E 2E       		MVI A,nobackupch
+0574   11AD C2 B2 11    		JNZ ramblktop2
+0575   11B0 3E 42       		MVI A,backupch
+0576   11B2             					
+0577   11B2             ; Set HL to start of highest memory location
+0578   11B2             ramblktop2:
+0579   11B2 32 01 00    		STA lcddata	
+0580   11B5             
+0581   11B5             ;*****************************
+0582   11B5             ;*** Complete memory test 2 **	
+0583   11B5             ;*****************************
+0584   11B5 21 00 A0    		LXI H,ram2		 ; Standard RAM location 0A000H
+0585   11B8             ramblktst2:
+0586   11B8 11 A9 1B    		LXI D,ramtstdata ; Load the RAM byte test data table
+0587   11BB             tstloc2:
+0588   11BB 1A          		LDAX D   		 ; D = Current RAM byte test data
+0589   11BC FE FE       		CPI eotramtests  ; 0FEH Check end of table
+0590   11BE CA CB 11    		JZ nextloc2       
+0591   11C1 77          		MOV M,A		 ; Write RAM location to table entry
+0592   11C2 4E          		MOV C,M          ; Read RAM location
+0593   11C3 B9          		CMP C		 ; Compare locations
+0594   11C4 C2 DE 11    		JNZ tstfail2   	 ; Not equal RAM location failed
+0595   11C7 13          		INX D            ; Get next RAM test byte
+0596   11C8 C3 BB 11    		JMP tstloc2       
+0597   11CB             nextloc2:                ; Move to next RAM location to test
+0598   11CB 23          		INX H            ; Addr++ count will rollover from 0FFFFH
+0599   11CC 7C          		MOV A,H          ; Check HL == 0
+0600   11CD FE C0       		CPI 0C0H         ; Compare next block
+0601   11CF CA D5 11    		JZ tstfin2       ; Finished testing
+0602   11D2 C2 B8 11    		JNZ ramblktst2
+0603   11D5             		
+0604   11D5             tstfin2:
+0605   11D5 3E 6D       		MVI A,goodmemch  ; Test OK
+0606   11D7 31 00 B0    		LXI SP,ram2+1000H; Top Memory Block + 10
+0607   11DA F5          		PUSH PSW         ; Put the 'M' on the stack
+0608   11DB C3 E0 11    		JMP exitblk2
+0609   11DE             tstfail2:
+0610   11DE 3E 46       		MVI A,badmemch   ; Test Fail
+0611   11E0             
+0612   11E0             exitblk2:
+0613   11E0 32 01 00    		STA lcddata    	 ; Load RAM # to screen	
+0614   11E3             
+0615   11E3             ;*****************************
+0616   11E3             ;*** First page RAM test 2 ***
+0617   11E3             ;*****************************
+0618   11E3 21 00 A0    		LXI H,ram2	; Standard RAM location 0A000H
+0619   11E6 AF          		XRA A
+0620   11E7             
+0621   11E7             ; Set up the first page
+0622   11E7             fpramtst2init:
+0623   11E7 3C          		INR A
+0624   11E8 77          		MOV M,A		; Read the value
+0625   11E9 2C          		INR L		; Next one in the list
+0626   11EA C2 E7 11    		JNZ fpramtst2init   ; Keep going until done
+0627   11ED             
+0628   11ED 0E C8       		MVI C,200	
+0629   11EF             delayfp2:
+0630   11EF 0D          		DCR C          ; Decrement C: 4
+0631   11F0 C2 EF 11    		JNZ delayfp2   ; Loop until C = 0: 7 = 11 = 4.45us
+0632   11F3             
+0633   11F3 21 00 A0    		LXI H,ram2    ; Standard RAM location 0A000H
+0634   11F6 AF          		XRA A
+0635   11F7             
+0636   11F7             fpramtst2:		
+0637   11F7 3C          		INR A
+0638   11F8 BE          		CMP M		; Compare with memory
+0639   11F9 C2 05 12    		JNZ fpramtst2fail 
+0640   11FC             
+0641   11FC 2C          		INR L		; Next one in the list
+0642   11FD C2 F7 11    		JNZ fpramtst2   ; Keep going until done
+0643   1200 3E 67       		MVI A,goodblock
+0644   1202 C3 07 12    		JMP fpramtst2exit ; Test complete
+0645   1205             
+0646   1205             fpramtst2fail:
+0647   1205 3E 48       		MVI A,badpagech  
+0648   1207             	
+0649   1207             fpramtst2exit:
+0650   1207 32 01 00    		STA lcddata    	 ; Load RAM # to screen
+0651   120A             						    
+0652   120A             ;*****************************
+0653   120A             ;******* 256byte test 2 ******	
+0654   120A             ;*****************************
+0655   120A 21 00 A0    		LXI H,ram2	; Standard RAM location 0A000H		
+0656   120D             
+0657   120D             ;Write test data to boundaries to check for SA Address lines
+0658   120D 36 08       		MVI M,8     ; Clear first location
+0659   120F             				
+0660   120F 23          		INX H           ; Address 1
+0661   1210 36 07       		MVI M,7
+0662   1212             				
+0663   1212 21 02 A0    		LXI H,ram2+002H ; Address 2
+0664   1215 36 06       		MVI M,6
+0665   1217             		
+0666   1217 21 04 A0    		LXI H,ram2+004H ; Address 4
+0667   121A 36 05       		MVI M,5
+0668   121C             		
+0669   121C 21 08 A0    		LXI H,ram2+008H ; Address 8
+0670   121F 36 04       		MVI M,4
+0671   1221             		
+0672   1221 21 10 A0    		LXI H,ram2+010H ; Address 16
+0673   1224 36 03       		MVI M,3
+0674   1226             		
+0675   1226 21 20 A0    		LXI H,ram2+020H ; Address 32
+0676   1229 36 02       		MVI M,2
+0677   122B             		
+0678   122B 21 40 A0    		LXI H,ram2+040H	; Address 64
+0679   122E 36 01       		MVI M,1
+0680   1230             		
+0681   1230 21 80 A0    		LXI H,ram2+080H ; Address 128
+0682   1233 36 00       		MVI M,0
+0683   1235             
+0684   1235             ;Check the contents of the tested RAM		
+0685   1235 21 00 A0    		LXI H,ram2	; Standard RAM location 0A000H		
+0686   1238 3E 08       		MVI A,8
+0687   123A             		
+0688   123A BE          		CMP M       ; Compare first locations				
+0689   123B C2 81 12    		JNZ ramloop2testfail ; Test failed
+0690   123E             
+0691   123E 23          		INX H       ; Address 1		
+0692   123F 3D          		DCR A
+0693   1240 BE          		CMP M       ; Compare Address 1			
+0694   1241 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0695   1244             
+0696   1244 3D          		DCR A				
+0697   1245 21 02 A0    		LXI H,ram2+002H ; Address 2
+0698   1248 BE          		CMP M           ; Compare Address 2		
+0699   1249 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0700   124C             
+0701   124C 3D          		DCR A				
+0702   124D 21 04 A0    		LXI H,ram2+004H ; Address 4
+0703   1250 BE          		CMP M           ; Compare Address 4		
+0704   1251 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0705   1254             		
+0706   1254 3D          		DCR A				
+0707   1255 21 08 A0    		LXI H,ram2+008H ; Address 8
+0708   1258 BE          		CMP M           ; Compare Address 8	
+0709   1259 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0710   125C             		
+0711   125C 3D          		DCR A				
+0712   125D 21 10 A0    		LXI H,ram2+010H ; Address 16
+0713   1260 BE          		CMP M           ; Compare Address 16		
+0714   1261 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0715   1264             		
+0716   1264 3D          		DCR A				
+0717   1265 21 20 A0    		LXI H,ram2+020H ; Address 32
+0718   1268 BE          		CMP M           ; Compare Address 32		
+0719   1269 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0720   126C             		
+0721   126C 3D          		DCR A				
+0722   126D 21 40 A0    		LXI H,ram2+040H ; Address 64
+0723   1270 BE          		CMP M           ; Compare Address 64		
+0724   1271 C2 81 12    		JNZ ramloop2testfail ; Test failed
+0725   1274             		
+0726   1274 3D          		DCR A				
+0727   1275 21 80 A0    		LXI H,ram2+080H ; Address 128
+0728   1278 BE          		CMP M           ; Compare Address 128		
+0729   1279 C2 81 12    		JNZ ramloop2testfail ; Test failed		
+0730   127C             
+0731   127C             		;Test successful
+0732   127C 3E 67       		MVI A,goodblock		
+0733   127E C3 87 12    		JMP ramloop2testend		
+0734   1281             		
+0735   1281             ramloop2testfail:
+0736   1281 4F          		MOV C,A
+0737   1282 3E 08       		MVI A,8
+0738   1284 91          		SUB C
+0739   1285 C6 30       		ADI '0'  		
+0740   1287             
+0741   1287             ramloop2testend:
+0742   1287 32 01 00    		STA lcddata	
+0743   128A             
+0744   128A             		; Wait 40us				
+0745   128A 0E 0A       		MVI C,10        ; Counter 10 	
+0746   128C             delayr2:
+0747   128C 0D          		DCR C          ; Decrement C: 4
+0748   128D C2 8C 12    		JNZ delayr2    ; Loop until C = 0: 7 = 11 = 4.45us
+0749   1290             
+0750   1290             ;11111111111111111111111111111
+0751   1290             ;*****************************
+0752   1290             ;*** Test RAM1
+0753   1290             ;*****************************
+0754   1290             ;*** Test Battery Backup 1 ***
+0755   1290             ;*****************************
+0756   1290             ; Check for data retention from last run should contain 0AAH
+0757   1290 21 2C C1    		LXI H,ram1+300	 ; Standard RAM location 0C064H	
+0758   1293             		
+0759   1293 7E          		MOV A,M
+0760   1294 FE AA       		CPI backupbyte
+0761   1296 3E 2E       		MVI A,nobackupch
+0762   1298 C2 9D 12    		JNZ ramblktop1
+0763   129B 3E 42       		MVI A,backupch
+0764   129D             					
+0765   129D             ; Set HL to start of highest memory location
+0766   129D             ramblktop1:
+0767   129D 32 01 00    		STA lcddata	
+0768   12A0             		
+0769   12A0             ;*****************************
+0770   12A0             ;*** Complete memory test 1 **	
+0771   12A0             ;*****************************
+0772   12A0 21 00 C0    		LXI H,ram1		 ; Standard RAM location 0C000H
+0773   12A3             		
+0774   12A3             ramblktst1:
+0775   12A3 11 A9 1B    		LXI D,ramtstdata ; Load the RAM byte test data table
+0776   12A6             tstloc1:
+0777   12A6 1A          		LDAX D   		 ; D = Current RAM byte test data
+0778   12A7 FE FE       		CPI eotramtests  ; 0FEH Check end of table
+0779   12A9 CA B6 12    		JZ nextloc1       
+0780   12AC 77          		MOV M,A			 ; Write RAM location to table entry
+0781   12AD 4E          		MOV C,M          ; Read RAM location
+0782   12AE B9          		CMP C			 ; Compare locations
+0783   12AF C2 C9 12    		JNZ tstfail1   	 ; Not equal RAM location failed
+0784   12B2 13          		INX D            ; Get next RAM test byte
+0785   12B3 C3 A6 12    		JMP tstloc1       
+0786   12B6             nextloc1:                ; Move to next RAM location to test
+0787   12B6 23          		INX H            ; Addr++ count will rollover from 0FFFFH
+0788   12B7 7C          		MOV A,H          ; Check HL == 0
+0789   12B8 FE E0       		CPI 0E0H         ; Compare next block
+0790   12BA CA C0 12    		JZ tstfin1       ; Finished testing
+0791   12BD C2 A3 12    		JNZ ramblktst1
+0792   12C0             		
+0793   12C0             tstfin1:
+0794   12C0 3E 6D       		MVI A,goodmemch  	; Test OK
+0795   12C2 31 00 D0    		LXI SP,ram1+1000H	; Top Memory Block + 10
+0796   12C5 F5          		PUSH PSW         	; Put the 'X' on the stack
+0797   12C6 C3 CB 12    		JMP exitblk1
+0798   12C9             tstfail1:
+0799   12C9 3E 46       		MVI A,badmemch   ; Test Fail
+0800   12CB             
+0801   12CB             exitblk1:
+0802   12CB 32 01 00    		STA lcddata    	 ; Load RAM # to screen		
+0803   12CE 0E 0A       		MVI C,10         ; Counter 10 	
+0804   12D0             delaybl11:
+0805   12D0 0D          		DCR C            ; Decrement C: 4
+0806   12D1 C2 D0 12    		JNZ delaybl11    ; Loop until C = 0: 7 = 11 = 4.45us	
+0807   12D4             
+0808   12D4             ;*****************************
+0809   12D4             ;*** First page RAM test 1 ***
+0810   12D4             ;*****************************
+0811   12D4 21 00 C0    		LXI H,ram1	; Standard RAM location 0C000H
+0812   12D7 AF          		XRA A
+0813   12D8             
+0814   12D8             ; Set up the first page
+0815   12D8             fpramtst1init:
+0816   12D8 3C          		INR A
+0817   12D9 77          		MOV M,A		; Read the value
+0818   12DA 2C          		INR L		; Next one in the list
+0819   12DB C2 D8 12    		JNZ fpramtst1init   ; Keep going until done
+0820   12DE             
+0821   12DE 0E C8       		MVI C,200	
+0822   12E0             delayfp1:
+0823   12E0 0D          		DCR C          ; Decrement C: 4
+0824   12E1 C2 E0 12    		JNZ delayfp1   ; Loop until C = 0: 7 = 11 = 4.45us
+0825   12E4             
+0826   12E4 21 00 C0    		LXI H,ram1    ; Standard RAM location 0C000H
+0827   12E7 AF          		XRA A
+0828   12E8             
+0829   12E8             fpramtst1:		
+0830   12E8 3C          		INR A
+0831   12E9 BE          		CMP M		; Compare with memory
+0832   12EA C2 F6 12    		JNZ fpramtst1fail 
+0833   12ED             
+0834   12ED 2C          		INR L		    ; Next one in the list
+0835   12EE C2 E8 12    		JNZ fpramtst1   ; Keep going until done
+0836   12F1 3E 67       		MVI A,goodblock
+0837   12F3 C3 F8 12    		JMP fpramtst1exit ; Test complete
+0838   12F6             
+0839   12F6             fpramtst1fail:
+0840   12F6 3E 48       		MVI A,badpagech  
+0841   12F8             	
+0842   12F8             fpramtst1exit:
+0843   12F8 32 01 00    		STA lcddata    	 ; Load RAM # to screen
+0844   12FB             		
+0845   12FB             ;*****************************
+0846   12FB             ;****** 256byte test 1 *******	
+0847   12FB             ;*****************************
+0848   12FB 21 00 C0    		LXI H,ram1		 ; Standard RAM location 0C000H		
+0849   12FE             
+0850   12FE             ;Write test data to boundaries to check for SA Address lines
+0851   12FE 36 08       		MVI M,8     ; Clear first location
+0852   1300             				
+0853   1300 23          		INX H           ; Address 1
+0854   1301 36 07       		MVI M,7
+0855   1303             				
+0856   1303 21 02 C0    		LXI H,ram1+002H ; Address 2
+0857   1306 36 06       		MVI M,6
+0858   1308             		
+0859   1308 21 04 C0    		LXI H,ram1+004H ; Address 4
+0860   130B 36 05       		MVI M,5
+0861   130D             		
+0862   130D 21 08 C0    		LXI H,ram1+008H ; Address 8
+0863   1310 36 04       		MVI M,4
+0864   1312             		
+0865   1312 21 10 C0    		LXI H,ram1+010H ; Address 16
+0866   1315 36 03       		MVI M,3
+0867   1317             		
+0868   1317 21 20 C0    		LXI H,ram1+020H ; Address 32
+0869   131A 36 02       		MVI M,2
+0870   131C             		
+0871   131C 21 40 C0    		LXI H,ram1+040H	; Address 64
+0872   131F 36 01       		MVI M,1
+0873   1321             		
+0874   1321 21 80 C0    		LXI H,ram1+080H ; Address 128
+0875   1324 36 00       		MVI M,0
+0876   1326             
+0877   1326             ;Check the contents of the tested RAM		
+0878   1326 21 00 C0    		LXI H,ram1	; Standard RAM location 0C000H		
+0879   1329 3E 08       		MVI A,8
+0880   132B             		
+0881   132B BE          		CMP M       ; Compare first locations				
+0882   132C C2 72 13    		JNZ ramloop1testfail ; Test failed
+0883   132F             
+0884   132F 23          		INX H       ; Address 1		
+0885   1330 3D          		DCR A
+0886   1331 BE          		CMP M       ; Compare Address 1			
+0887   1332 C2 72 13    		JNZ ramloop1testfail ; Test failed
+0888   1335             
+0889   1335 3D          		DCR A				
+0890   1336 21 02 C0    		LXI H,ram1+002H ; Address 2
+0891   1339 BE          		CMP M           ; Compare Address 2		
+0892   133A C2 72 13    		JNZ ramloop1testfail ; Test failed
+0893   133D             
+0894   133D 3D          		DCR A				
+0895   133E 21 04 C0    		LXI H,ram1+004H ; Address 4
+0896   1341 BE          		CMP M           ; Compare Address 4		
+0897   1342 C2 72 13    		JNZ ramloop1testfail ; Test failed
+0898   1345             		
+0899   1345 3D          		DCR A				
+0900   1346 21 08 C0    		LXI H,ram1+008H ; Address 8
+0901   1349 BE          		CMP M           ; Compare Address 8	
+0902   134A C2 72 13    		JNZ ramloop1testfail ; Test failed
+0903   134D             		
+0904   134D 3D          		DCR A				
+0905   134E 21 10 C0    		LXI H,ram1+010H ; Address 16
+0906   1351 BE          		CMP M           ; Compare Address 16		
+0907   1352 C2 72 13    		JNZ ramloop1testfail ; Test failed
+0908   1355             		
+0909   1355 3D          		DCR A				
+0910   1356 21 20 C0    		LXI H,ram1+020H ; Address 32
+0911   1359 BE          		CMP M           ; Compare Address 32		
+0912   135A C2 72 13    		JNZ ramloop1testfail ; Test failed
+0913   135D             		
+0914   135D 3D          		DCR A				
+0915   135E 21 40 C0    		LXI H,ram1+040H ; Address 64
+0916   1361 BE          		CMP M           ; Compare Address 64		
+0917   1362 C2 72 13    		JNZ ramloop1testfail ; Test failed
+0918   1365             		
+0919   1365 3D          		DCR A				
+0920   1366 21 80 C0    		LXI H,ram1+080H ; Address 128
+0921   1369 BE          		CMP M           ; Compare Address 128		
+0922   136A C2 72 13    		JNZ ramloop1testfail ; Test failed		
+0923   136D             
+0924   136D             		;Test successful
+0925   136D 3E 67       		MVI A,goodblock		
+0926   136F C3 78 13    		JMP ramloop1testend		
+0927   1372             		
+0928   1372             ramloop1testfail:
+0929   1372 4F          		MOV C,A
+0930   1373 3E 08       		MVI A,8
+0931   1375 91          		SUB C
+0932   1376 C6 30       		ADI '0'  		
+0933   1378             
+0934   1378             ramloop1testend:
+0935   1378 32 01 00    		STA lcddata	
+0936   137B             
+0937   137B             		; Wait 40us				
+0938   137B 0E 0A       		MVI C,10        ; Counter 10 	
+0939   137D             delayr1:
+0940   137D 0D          		DCR C          ; Decrement C: 4
+0941   137E C2 7D 13    		JNZ delayr1    ; Loop until C = 0: 7 = 11 = 4.45us
+0942   1381             
+0943   1381             ;00000000000000000000000000000
+0944   1381             ;*****************************
+0945   1381             ;*** RAM 0
+0946   1381             ;*****************************
+0947   1381             ;*** Test Battery Backup 0 ***
+0948   1381             ;*****************************
+0949   1381             ; Check for data retention from last run should contain 0AAH		
+0950   1381 21 2C E1    		LXI H,ram0+300	 ; Standard RAM location 0E064H	
+0951   1384             		
+0952   1384 7E          		MOV A,M
+0953   1385 FE AA       		CPI backupbyte
+0954   1387 3E 2E       		MVI A,nobackupch
+0955   1389 C2 8E 13    		JNZ ramblktop
+0956   138C 3E 42       		MVI A,backupch
+0957   138E             
+0958   138E             ; Set HL to start of highest memory location
+0959   138E             ramblktop:
+0960   138E 32 01 00    		STA lcddata
+0961   1391             
+0962   1391             ;*****************************
+0963   1391             ;*** Complete memory test 0 **
+0964   1391             ;*****************************
+0965   1391 21 00 E0    		LXI H,ram0   ; Standard RAM location 0E000H	
+0966   1394             ramblktst:
+0967   1394 11 A9 1B    		LXI D,ramtstdata ; Load the RAM byte test data table
+0968   1397             tstloc:
+0969   1397 1A          		LDAX D   	     ; D = Current RAM byte test data
+0970   1398 FE FE       		CPI eotramtests  ;0FEH Check end of table
+0971   139A CA A7 13    		JZ nextloc       
+0972   139D 77          		MOV M,A			 ; Write RAM location to table entry
+0973   139E 4E          		MOV C,M          ; Read RAM location
+0974   139F B9          		CMP C			 ; Compare locations
+0975   13A0 C2 BA 13    		JNZ tstfail   	 ; Not equal RAM location failed
+0976   13A3 13          		INX D            ; Get next RAM test byte
+0977   13A4 C3 97 13    		JMP tstloc       
+0978   13A7             nextloc:                 ; Move to next RAM location to test
+0979   13A7 23          		INX H            ; Addr++ count will rollover from 0FFFFH
+0980   13A8 7C          		MOV A,H          ; Check HL == 0
+0981   13A9 FE 00       		CPI 0H
+0982   13AB CA B1 13    		JZ tstfin        ; Finished testing if HL == 0
+0983   13AE C2 94 13    		JNZ ramblktst
+0984   13B1             		
+0985   13B1             tstfin:
+0986   13B1 3E 6D       		MVI A,goodmemch   ; Test OK
+0987   13B3 31 00 F0    		LXI SP,ram0+1000H ; Top Memory Block + 1000H
+0988   13B6 F5          		PUSH PSW          ; Put the char on the stack
+0989   13B7 C3 BC 13    		JMP exitblk
+0990   13BA             tstfail:
+0991   13BA 3E 46       		MVI A,badmemch    ; Test Fail
+0992   13BC             
+0993   13BC             exitblk:
+0994   13BC 32 01 00    		STA lcddata    	 ; Load RAM # to screen	
+0995   13BF             	
+0996   13BF             ;*****************************
+0997   13BF             ;*** First page RAM test 0 ***
+0998   13BF             ;*****************************
+0999   13BF 21 00 E0    		LXI H,ram0	; Standard RAM location 0E000H
+1000   13C2 AF          		XRA A
+1001   13C3             
+1002   13C3             ; Set up the first page
+1003   13C3             fpramtst0init:
+1004   13C3 3C          		INR A
+1005   13C4 77          		MOV M,A		; Read the value
+1006   13C5 2C          		INR L		; Next one in the list
+1007   13C6 C2 C3 13    		JNZ fpramtst0init   ; Keep going until done
+1008   13C9             
+1009   13C9 0E C8       		MVI C,200	
+1010   13CB             delayfp0:
+1011   13CB 0D          		DCR C          ; Decrement C: 4
+1012   13CC C2 CB 13    		JNZ delayfp0   ; Loop until C = 0: 7 = 11 = 4.45us
+1013   13CF             
+1014   13CF 21 00 E0    		LXI H,ram0    ; Standard RAM location 0E000H
+1015   13D2 AF          		XRA A
+1016   13D3             
+1017   13D3             fpramtst0:		
+1018   13D3 3C          		INR A
+1019   13D4 BE          		CMP M		; Compare with memory
+1020   13D5 C2 E1 13    		JNZ fpramtst0fail 
+1021   13D8             
+1022   13D8 2C          		INR L			; Next one in the list
+1023   13D9 C2 D3 13    		JNZ fpramtst0   ; Keep going until done
+1024   13DC 3E 67       		MVI A,goodblock
+1025   13DE C3 E3 13    		JMP fpramtst0exit ; Test complete
+1026   13E1             
+1027   13E1             fpramtst0fail:
+1028   13E1 3E 48       		MVI A,badpagech  
+1029   13E3             	
+1030   13E3             fpramtst0exit:
+1031   13E3 32 01 00    		STA lcddata    	 ; Load RAM # to screen
+1032   13E6             
+1033   13E6             ;*****************************
+1034   13E6             ;******* 256byte test 0 ******	
+1035   13E6             ;*****************************
+1036   13E6 21 00 E0    		LXI H,ram0		 ; Standard RAM location 0E000H		
+1037   13E9             
+1038   13E9             ;Write test data to boundaries to check for SA Address lines
+1039   13E9 36 08       		MVI M,8         ; Clear first location
+1040   13EB             				
+1041   13EB 23          		INX H           ; Address 1
+1042   13EC 36 07       		MVI M,7
+1043   13EE             				
+1044   13EE 21 02 E0    		LXI H,ram0+002H ; Address 2
+1045   13F1 36 06       		MVI M,6
+1046   13F3             		
+1047   13F3 21 04 E0    		LXI H,ram0+004H ; Address 4
+1048   13F6 36 05       		MVI M,5
+1049   13F8             		
+1050   13F8 21 08 E0    		LXI H,ram0+008H ; Address 8
+1051   13FB 36 04       		MVI M,4
+1052   13FD             		
+1053   13FD 21 10 E0    		LXI H,ram0+010H ; Address 16
+1054   1400 36 03       		MVI M,3
+1055   1402             		
+1056   1402 21 20 E0    		LXI H,ram0+020H ; Address 32
+1057   1405 36 02       		MVI M,2
+1058   1407             		
+1059   1407 21 40 E0    		LXI H,ram0+040H	; Address 64
+1060   140A 36 01       		MVI M,1
+1061   140C             		
+1062   140C 21 80 E0    		LXI H,ram0+080H ; Address 128
+1063   140F 36 00       		MVI M,0
+1064   1411             
+1065   1411             ;Check the contents of the tested RAM		
+1066   1411 21 00 E0    		LXI H,ram0	; Standard RAM location 0E000H		
+1067   1414 3E 08       		MVI A,8
+1068   1416             		
+1069   1416 BE          		CMP M       ; Compare first locations				
+1070   1417 C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1071   141A             
+1072   141A 23          		INX H       ; Address 1		
+1073   141B 3D          		DCR A
+1074   141C BE          		CMP M       ; Compare Address 1			
+1075   141D C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1076   1420             
+1077   1420 3D          		DCR A				
+1078   1421 21 02 E0    		LXI H,ram0+002H ; Address 2
+1079   1424 BE          		CMP M           ; Compare Address 2		
+1080   1425 C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1081   1428             
+1082   1428 3D          		DCR A				
+1083   1429 21 04 E0    		LXI H,ram0+004H ; Address 4
+1084   142C BE          		CMP M           ; Compare Address 4		
+1085   142D C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1086   1430             		
+1087   1430 3D          		DCR A				
+1088   1431 21 08 E0    		LXI H,ram0+008H ; Address 8
+1089   1434 BE          		CMP M           ; Compare Address 8	
+1090   1435 C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1091   1438             		
+1092   1438 3D          		DCR A				
+1093   1439 21 10 E0    		LXI H,ram0+010H ; Address 16
+1094   143C BE          		CMP M           ; Compare Address 16		
+1095   143D C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1096   1440             		
+1097   1440 3D          		DCR A				
+1098   1441 21 20 E0    		LXI H,ram0+020H ; Address 32
+1099   1444 BE          		CMP M           ; Compare Address 32		
+1100   1445 C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1101   1448             		
+1102   1448 3D          		DCR A				
+1103   1449 21 40 E0    		LXI H,ram0+040H ; Address 64
+1104   144C BE          		CMP M           ; Compare Address 64		
+1105   144D C2 5D 14    		JNZ ramloop0testfail ; Test failed
+1106   1450             		
+1107   1450 3D          		DCR A				
+1108   1451 21 80 E0    		LXI H,ram0+080H ; Address 128
+1109   1454 BE          		CMP M           ; Compare Address 128		
+1110   1455 C2 5D 14    		JNZ ramloop0testfail ; Test failed		
+1111   1458             
+1112   1458             		;Test successful
+1113   1458 3E 67       		MVI A,goodblock		
+1114   145A C3 63 14    		JMP ramloop0testend		
+1115   145D             		
+1116   145D             ramloop0testfail:
+1117   145D 4F          		MOV C,A
+1118   145E 3E 08       		MVI A,8
+1119   1460 91          		SUB C
+1120   1461 C6 30       		ADI '0'  		
+1121   1463             
+1122   1463             ramloop0testend:
+1123   1463 32 01 00    		STA lcddata	
+1124   1466             
+1125   1466 0E 0A       		MVI C,10       ; Counter 10 	
+1126   1468             delayr0:
+1127   1468 0D          		DCR C          ; Decrement C: 4
+1128   1469 C2 68 14    		JNZ delayr0    ; Loop until C = 0: 7 = 11 = 4.45us
+1129   146C             
+1130   146C             ; ==============================================================
+1131   146C             ; TEST 2:
+1132   146C             ;  Write to each individual 256 block, make sure the block
+1133   146C             ;  is correctly selected.  May also show the RAM is bad.
+1134   146C             ;  This will test address lines A14-A8 = 128 blocks.
+1135   146C             ;  The Address lines A10-A8 are directly attached to the chip
+1136   146C             ;  and can be identified as to the part they are identified as
+1137   146C             ;  LKJ when failing.  
+1138   146C             ;  The Address lines A14-A11 are  indirectly used to access the RAMs 
+1139   146C             ;  via decoders.  Consequently if these lines fail they are limited
+1140   146C             ;  to the failed CE.
+1141   146C             ;  The char 'm' is used to indicate a passing block.
+1142   146C             ;  The test will stop on the first block to fail in the 2K RAM
+1143   146C             ;  block.
+1144   146C             ; ==============================================================	
+1145   146C 3E C0       		MVI A,0C0H      ; Set Cursor to bottom LH corner
+1146   146E 32 00 00    		STA lcdins      ; diagnostic  LCD Instruction
+1147   1471             
+1148   1471 0E 0A       		MVI C,10       ; Counter 10 	
+1149   1473             delay14a:
+1150   1473 0D          		DCR C          ; Decrement C: 4
+1151   1474 C2 73 14    		JNZ delay14a   ; Loop until C = 0: 7 = 11 = 4.45us
+1152   1477             							
+1153   1477 21 00 80    		LXI H,ramstart  ; Start of RAM
+1154   147A             ;		LXI SP,800H     ; 2K Blocks
+1155   147A             ;		MVI D,16        ; Number of banks to test 16 for 2K blocks
+1156   147A 31 00 01    		LXI SP,100H     ; 256byte Blocks this will store 128 numbers in the RAM
+1157   147D 16 80       		MVI D,128       ; Number of banks to test = 128 * 256 = 32K
+1158   147F             						; 
+1159   147F AF          		XRA A           ; Clear A
+1160   1480             		
+1161   1480             ; Set up the RAM banks with unique numbers to check indvidual CS- lines
+1162   1480             ramloop:
+1163   1480 3C          		INR A           ; 
+1164   1481 77          		MOV M,A
+1165   1482 39          		DAD SP          ; Add on preset block size to get the next block
+1166   1483 15          		DCR D
+1167   1484 C2 80 14    		JNZ ramloop     ; 
+1168   1487             
+1169   1487 21 00 80    		LXI H,ramstart  ; Start of RAM
+1170   148A             ;		MVI D,16        ; Number of banks to test
+1171   148A             ;		MVI D,128       ; Number of banks to test
+1172   148A AF          		XRA A           ; Clear A
+1173   148B             	
+1174   148B             ; Test the ram banks CS- lines are working correctly
+1175   148B             ; Print M if correct or the numeric location of the failing
+1176   148B             ; RAM chip Address line.
+1177   148B             	
+1178   148B             ramloop128:
+1179   148B 3C          		INR A           ; Increment A
+1180   148C 5F          		MOV E,A         ; Move RAM byte to E
+1181   148D BE          		CMP M
+1182   148E C2 A2 14    		JNZ ramfail
+1183   1491 E6 07       		ANI 007H        ; See if this is the end of the 2K RAM block
+1184   1493 FE 07       		CPI 007H        ;
+1185   1495 7B          		MOV A,E
+1186   1496 C2 F1 14    		JNZ contloop    ; Next location
+1187   1499 3E 6D       		MVI A,goodmemch  ; Char for diag LCD to indicate 2K RAM block is OK
+1188   149B 32 01 00    		STA lcddata
+1189   149E 7B          		MOV A,E
+1190   149F C3 EB 14    		JMP prtdelay
+1191   14A2             
+1192   14A2             ramfail:
+1193   14A2 E6 07       		ANI 7          ; Get the Address that failed
+1194   14A4             		
+1195   14A4             ;IF 2,3 or 5 then A8, A9, A10 = JKL
+1196   14A4             ;IF 1 then need to SUB 1 /8 and add 1 to give CE line		
+1197   14A4 FE 01       		CPI 1
+1198   14A6 CA CC 14    		JZ idchipenable  ; Check if CE- Failure.
+1199   14A9 FE 02       		CPI 2            ; Check for A8
+1200   14AB C2 B3 14    		JNZ nextaddr
+1201   14AE 3E 4A       		MVI A,'J'   
+1202   14B0 C3 DF 14    		JMP sendtodiag
+1203   14B3             		
+1204   14B3             nextaddr:
+1205   14B3 FE 03       		CPI 3            ; Check for A9
+1206   14B5 C2 BD 14    		JNZ nextaddr1
+1207   14B8 3E 4B       		MVI A,'K'   
+1208   14BA C3 DF 14    		JMP sendtodiag
+1209   14BD             		
+1210   14BD             nextaddr1:
+1211   14BD FE 05       		CPI 5            ; Check for A10
+1212   14BF C2 C7 14    		JNZ nextaddr2
+1213   14C2 3E 4C       		MVI A,'L'   
+1214   14C4 C3 DF 14    		JMP sendtodiag
+1215   14C7             
+1216   14C7             nextaddr2:		
+1217   14C7 3E 3F       		MVI A,'?'        ; Unkown memory fault could be dual failure
+1218   14C9 C3 DF 14    		JMP sendtodiag
+1219   14CC             				
+1220   14CC             ;ID the failed chip enable:1 - F
+1221   14CC             idchipenable:
+1222   14CC 7B          		MOV A,E        ; Retrieve the failing address ID
+1223   14CD DE 01       		SBI 1          ; Subtract 1
+1224   14CF 1F          		RAR
+1225   14D0 1F          		RAR
+1226   14D1 1F          		RAR            ; Divide by 8
+1227   14D2 C6 01       		ADI 1          ; Add 1 to give CEx value
+1228   14D4             
+1229   14D4             ;Print out HEX value of Chip Enable
+1230   14D4 E6 0F       		ANI 00FH 		; Get Bottom Digit
+1231   14D6 FE 0A       		CPI 0AH 		; A > 10
+1232   14D8 DA DD 14    		JC  hexdigit 	
+1233   14DB C6 07       		ADI 07H 	    ; Add 7 as this is A-F
+1234   14DD             hexdigit: 
+1235   14DD C6 30       		ADI 30H
+1236   14DF             
+1237   14DF             sendtodiag:
+1238   14DF 32 01 00    		STA lcddata    ; Print character
+1239   14E2 7C          		MOV A,H        ; Skip the 2K RAM block as it failed
+1240   14E3 F6 07       		ORI 007H       
+1241   14E5 67          		MOV H,A
+1242   14E6 7B          		MOV A,E        ; Restore test number
+1243   14E7 E6 F8       		ANI 0F8H       ; Increment to next 2K RAM block
+1244   14E9 C6 08       		ADI 008H
+1245   14EB             
+1246   14EB             prtdelay:
+1247   14EB 0E 0A       		MVI C,10       ; Counter 10 	
+1248   14ED             delay15:
+1249   14ED 0D          		DCR C          ; Decrement C: 4
+1250   14EE C2 ED 14    		JNZ delay15    ; Loop until C = 0: 7 = 11 = 4.45us	
+1251   14F1             
+1252   14F1             contloop:	
+1253   14F1 39          		DAD SP
+1254   14F2 FE 80       		CPI 128
+1255   14F4 C2 8B 14    		JNZ ramloop128
+1256   14F7             
+1257   14F7             ; ==============================================================				
+1258   14F7             ; Now pick a RAM module to use for the next set of tests. 
+1259   14F7             ; ==============================================================
+1260   14F7             ramcheck:
+1261   14F7 31 FE EF    		LXI SP,ram0+1000H - 2 ; Module 0				
+1262   14FA F1          		POP PSW	
+1263   14FB FE 6D       		CPI goodmemch     ; If successful RAM block is OK
+1264   14FD 3E 30       		MVI A,'0'
+1265   14FF 11 29 23    		LXI D,optram0load
+1266   1502 C2 4F 15    		JNZ ramfnd		  ; JZ ramfnd
+1267   1505             
+1268   1505 31 FE CF    		LXI SP,ram1+1000H - 2 ; Module 1				
+1269   1508 F1          		POP PSW			
+1270   1509 FE 6D       		CPI goodmemch     ; If successful RAM block is OK
+1271   150B 3E 31       		MVI A,'1'
+1272   150D 11 12 23    		LXI D,optram1load
+1273   1510 C2 4F 15    		JNZ ramfnd		  ; JZ ramfnd
+1274   1513             						
+1275   1513 31 FE AF    		LXI SP,ram2+1000H - 2; Module 2				
+1276   1516 F1          		POP PSW			
+1277   1517 FE 6D       		CPI goodmemch     ; If successful RAM block is OK
+1278   1519 3E 32       		MVI A,'2'
+1279   151B 11 FB 22    		LXI D,optram2load
+1280   151E C2 4F 15    		JNZ ramfnd		  ; JZ ramfnd		
+1281   1521             
+1282   1521 31 FE 8F    		LXI SP,ram3+1000H -2 ; Module 3				
+1283   1524 F1          		POP PSW			
+1284   1525 FE 6D       		CPI goodmemch     ; If successful RAM block is OK
+1285   1527 3E 33       		MVI A,'3'		
+1286   1529 11 29 23    		LXI D,optram0load
+1287   152C C2 4F 15    		JNZ ramfnd		  ; JZ ramfnd
+1288   152F             
+1289   152F             ; delay so screen can be read
+1290   152F 06 0A       		MVI B,10			  ; adjusts delay time
+1291   1531             waithalflongx:
+1292   1531 21 50 C3    		LXI H,0C350H   ; Load 16-bit delay counter for a 1s Loop
+1293   1534             waithalflooplongx:
+1294   1534 2B          		DCX H         ; Decrement delay counter: 6
+1295   1535 7C          		MOV A,H       ; Test count for 0: 4
+1296   1536 B5          		ORA L         ; Test lower byte: 4
+1297   1537 C2 34 15    		JNZ waithalflooplongx  ; wait for zero count: 7 = 21cycles = 8.54us * 65536 = 0.55s
+1298   153A             
+1299   153A 05          		DCR B
+1300   153B C2 31 15    		JNZ waithalflongx
+1301   153E             
+1302   153E             ;diagnostic LCD CLEAR before rerunning test
+1303   153E 36 01       		MVI M,lcdclr   ; LCD Clear
+1304   1540             	
+1305   1540             		; Wait 1.64ms		
+1306   1540             		; Wait 800us
+1307   1540 06 02       		MVI B,2
+1308   1542             delayls
+1309   1542 0E BE       		MVI C,190      ; Counter 190 	
+1310   1544             delayl:
+1311   1544 0D          		DCR C          ; Decrement C: 4
+1312   1545 C2 44 15    		JNZ delayl     ; Loop until C = 0: 7 = 11 = 4.45us		
+1313   1548             		
+1314   1548 05          		DCR B
+1315   1549 C2 42 15    		JNZ delayls
+1316   154C             
+1317   154C C3 AF 10    		JMP bgrtst      ; All RAM OK, 
+1318   154F             
+1319   154F             ; SP is now set up with valid RAM location	
+1320   154F             ramfnd:
+1321   154F C3 8B 15    		JMP cpuhlt      ; No useful RAM
+1322   1552             		;CALL stromlocation ; Temp use this location to store A for later use
+1323   1552             		;MOV M,A
+1324   1552             		
+1325   1552             
+1326   1552             
+1327   1552             ; ##########################################################
+1328   1552             ; ##########################################################		
+1329   1552             ; **********************************************************
+1330   1552             ; Used at the end of the tests and to test power off.
+1331   1552             ; prtdone uses RAM so cannot be used until RAM is tested.
+1332   1552             ; Prints out the DONE! message
+1333   1552             ; The board will power down to test the power
+1334   1552             ; down feature is operational.
+1335   1552             ; **********************************************************
+1336   1552             prtdone:
+1337   1552 F3          		DI
+1338   1553 CD B1 15    		CALL buzzer
+1339   1556 CD 0E 17    		CALL clrscreen  ; Reset the screen for the new test
+1340   1559             		
+1341   1559 21 74 1A    		LXI H,testcompletestr ; 11 chars
+1342   155C CD BC 16    		CALL putstr		
+1343   155F             
+1344   155F 3E C0       		MVI A,0C0H      ; Set Cursor to back for new count
+1345   1561 CD B1 16    		CALL putins
+1346   1564             
+1347   1564 21 85 1A    		LXI H,versioninfostr
+1348   1567 CD BC 16    		CALL putstr
+1349   156A             
+1350   156A 06 0A        		MVI B,10
+1351   156C             prtwait:
+1352   156C CD 3B 17    		CALL longdelay  ; Countdown power off	
+1353   156F 05          		DCR B		
+1354   1570 C2 6C 15    		JNZ prtwait		
+1355   1573             
+1356   1573 CD B1 15    		CALL buzzer
+1357   1576             		
+1358   1576 3E 80        		MVI A,80H       ; Set Cursor to top line
+1359   1578 CD B1 16    		CALL putins
+1360   157B             
+1361   157B 21 63 1A    		LXI H,goodbye
+1362   157E CD BC 16    		CALL putstr
+1363   1581             		
+1364   1581 CD 3B 17    		CALL longdelay  ; Let the user see the text
+1365   1584             	
+1366   1584 3E FF       		MVI A,0FFH
+1367   1586 D3 B2       		OUT PIOB ; Should power down the board after 120s
+1368   1588 C3 AE 15    		JMP haltwait	
+1369   158B             
+1370   158B             ; ##########################################################
+1371   158B             ; ##########################################################				
+1372   158B             ; **********************************************************
+1373   158B             ; Halt the CPU testing done or failure
+1374   158B             ; Routine does not rely on RAM so can be used at any point
+1375   158B             ; **********************************************************
+1376   158B             cpuhlt:
+1377   158B 21 01 00    		LXI H,lcddata  ; Load LCD Data location
+1378   158E 36 48       		MVI M,'H'      ; Load H to screen
+1379   1590             		
+1380   1590             		; Wait 40us		
+1381   1590 0E 0A       		MVI C,10      ; Counter 10 	
+1382   1592             delayH0:
+1383   1592 0D          		DCR C          ; Decrement C: 4
+1384   1593 C2 92 15    		JNZ delayH0    ; Loop until C = 0: 7 = 11 = 4.45us	
+1385   1596             		
+1386   1596 36 4C       		MVI M,'L'      ; Load L to screen
+1387   1598             		
+1388   1598             		; Wait 40us		
+1389   1598 0E 0A       		MVI C,10      ; Counter 10 	
+1390   159A             delayH1:
+1391   159A 0D          		DCR C          ; Decrement C: 4
+1392   159B C2 9A 15    		JNZ delayH1    ; Loop until C = 0: 7 = 11 = 4.45us	
+1393   159E             
+1394   159E 36 54       		MVI M,'T'      ; Load T to screen
+1395   15A0             		
+1396   15A0             		; Wait 40us		
+1397   15A0 0E 0A       		MVI C,10      ; Counter 10 	
+1398   15A2             delayH2:
+1399   15A2 0D          		DCR C          ; Decrement C: 4
+1400   15A3 C2 A2 15    		JNZ delayH2    ; Loop until C = 0: 7 = 11 = 4.45us			
+1401   15A6             
+1402   15A6 36 21       		MVI M,'!'      ; Load ! to screen
+1403   15A8             		
+1404   15A8             		; Wait 40us		
+1405   15A8 0E 0A       		MVI C,10      ; Counter 10 	
+1406   15AA             delayH3:
+1407   15AA 0D          		DCR C          ; Decrement C: 4
+1408   15AB C2 AA 15    		JNZ delayH3   ; Loop until C = 0: 7 = 11 = 4.45us
+1409   15AE             		
+1410   15AE             haltwait:	
+1411   15AE C3 AE 15    		JMP haltwait	
+1412   15B1             
+1413   15B1             ; **********************************************************
+1414   15B1             ;
+1415   15B1             ; Utility routines to provide generic functions to main test
+1416   15B1             ; Routines
+1417   15B1             ;
+1418   15B1             ; **********************************************************
+1419   15B1             ; ======================================================
+1420   15B1             ; Sound Buzzer
+1421   15B1             ; ======================================================
+1422   15B1             buzzer:
+1423   15B1 06 00       		MVI B,00H           ; Execute loop 255 times
+1424   15B3             buzzerwait:
+1425   15B3 CD C0 15    		CALL clicksound     ; Click sound port
+1426   15B6 0E 50       		MVI C,50H
+1427   15B8 CD 03 17    		CALL shortdelay     ; Delay routine - decrement C until zero
+1428   15BB 05          		DCR B
+1429   15BC C2 B3 15    		JNZ buzzerwait
+1430   15BF C9          		RET
+1431   15C0             
+1432   15C0             ; ======================================================
+1433   15C0             ; Click sound port
+1434   15C0             ; ======================================================
+1435   15C0             clicksound:
+1436   15C0 DB B2       		IN  PIOB	; 0BAH Load current value of I/O port BAH
+1437   15C2 EE 20       		XRI 020H    ; Toggle the speaker I/O bit
+1438   15C4 D3 B2       		OUT PIOB    ; 0BAH Write new value to speaker to cause a "click"
+1439   15C6 C9          		RET
+1440   15C7             		
+1441   15C7             ; ======================================================
+1442   15C7             ; Trap routine power down the board when power off
+1443   15C7             ; ======================================================
+1444   15C7             trap:
+1445   15C7 DB BA       		IN  0BAH        ; Get Current I/O value of BAH
+1446   15C9 F6 10       		ORI 010H        ; Set the PowerDown bit
+1447   15CB D3 BA       		OUT 0BAH        ; PowerDown.  We will loose power here
+1448   15CD 76          		HLT		
+1449   15CE             		
+1450   15CE             ; **********************************************************
+1451   15CE             ; Address calculation routines to deal with unknown RAM Locations
+1452   15CE             ; **********************************************************
+1453   15CE             countdownmem  .equ 14
+1454   15CE             strommem      .equ countdownmem + 4
+1455   15CE             rst75testmem  .equ strommem + 4
+1456   15CE             rxbuffermem   .equ rst75testmem + 4
+1457   15CE             rst55testmem  .equ rxbuffermem + 4
+1458   15CE             keyboardmem   .equ rst55testmem + 4
+1459   15CE             casstoragemem .equ 12 ; Stored at a different location
+1460   15CE             
+1461   15CE             ; ======================================================
+1462   15CE             ; Get Start of RAM block, using current SP, into DE
+1463   15CE             ; ======================================================
+1464   15CE             ramsblockstart:
+1465   15CE E5          		PUSH H
+1466   15CF F5          		PUSH PSW
+1467   15D0 21 00 00    		LXI H,0
+1468   15D3 39          		DAD SP
+1469   15D4 7C          		MOV A,H
+1470   15D5 E6 E0       		ANI 0E0H	; Remove the 1000H Addition to SP
+1471   15D7 67          		MOV H,A
+1472   15D8 2E 00       		MVI L,0
+1473   15DA EB          		XCHG
+1474   15DB F1          		POP PSW
+1475   15DC E1          		POP H
+1476   15DD C9          		RET
+1477   15DE             
+1478   15DE             ; ======================================================
+1479   15DE             ; Get Start of SP + 1, into DE
+1480   15DE             ; Relies on Stack not getting too large and on a 00H boundary
+1481   15DE             ; ======================================================
+1482   15DE             stackstart:
+1483   15DE E5          		PUSH H
+1484   15DF F5          		PUSH PSW
+1485   15E0 21 00 00    		LXI H,0
+1486   15E3 39          		DAD SP
+1487   15E4 7C          		MOV A,H
+1488   15E5 E6 E0       		ANI 0E0H
+1489   15E7 F6 10       		ORI 010H
+1490   15E9 67          		MOV H,A
+1491   15EA 2E 02       		MVI L,2
+1492   15EC EB          		XCHG
+1493   15ED F1          		POP PSW
+1494   15EE E1          		POP H
+1495   15EF C9          		RET
+1496   15F0             
+1497   15F0             ; ======================================================
+1498   15F0             ; Get Clock Storage into HL, SP + 2
+1499   15F0             ; ======================================================
+1500   15F0             clocklocation:
+1501   15F0 D5          		PUSH D
+1502   15F1 CD DE 15    		CALL stackstart
+1503   15F4 EB          		XCHG
+1504   15F5 D1          		POP D	
+1505   15F6 C9          		RET
+1506   15F7             
+1507   15F7             ; ======================================================
+1508   15F7             ; Get Countdown Memory location
+1509   15F7             ; ======================================================
+1510   15F7             getcountdown:
+1511   15F7 F5          		PUSH PSW
+1512   15F8 D5          		PUSH D
+1513   15F9 CD DE 15    		CALL stackstart  
+1514   15FC EB          		XCHG	
+1515   15FD D1          		POP D
+1516   15FE 7D          		MOV A,L
+1517   15FF C6 0E       		ADI countdownmem ; Add 12 to Stack start
+1518   1601 6F          		MOV L,A
+1519   1602 F1          		POP PSW
+1520   1603 C9          		RET
+1521   1604             
+1522   1604             ; ======================================================
+1523   1604             ; Get STROM memory location
+1524   1604             ; ======================================================
+1525   1604             stromlocation:
+1526   1604 F5          		PUSH PSW
+1527   1605 D5          		PUSH D
+1528   1606 CD DE 15    		CALL stackstart
+1529   1609 EB          		XCHG	
+1530   160A D1          		POP D
+1531   160B 7D          		MOV A,L
+1532   160C C6 12       		ADI strommem ; Add 14 to Stack start
+1533   160E 6F          		MOV L,A
+1534   160F F1          		POP PSW
+1535   1610 C9          		RET
+1536   1611             
+1537   1611             ; ======================================================
+1538   1611             ; Get RST7.5 Test Store
+1539   1611             ; ======================================================
+1540   1611             rst75testlocation:
+1541   1611 F5          		PUSH PSW
+1542   1612 D5          		PUSH D
+1543   1613 CD DE 15    		CALL stackstart
+1544   1616 EB          		XCHG	
+1545   1617 D1          		POP D
+1546   1618 7D          		MOV A,L
+1547   1619 C6 16       		ADI rst75testmem ; Add 16 to Stack start
+1548   161B 6F          		MOV L,A
+1549   161C F1          		POP PSW
+1550   161D C9          		RET
+1551   161E             
+1552   161E             ; ======================================================
+1553   161E             ; Reset RST7.5 count Store
+1554   161E             ; ======================================================
+1555   161E             rst75testlocationreset:
+1556   161E CD 11 16    		CALL rst75testlocation
+1557   1621 F3          		DI
+1558   1622 36 00       		MVI M,0
+1559   1624 FB          		EI
+1560   1625 C9          		RET
+1561   1626             
+1562   1626             ; ======================================================
+1563   1626             ; Retrieve RST7.5 count Store
+1564   1626             ; ======================================================
+1565   1626             rst75testlocationget:
+1566   1626 CD 11 16    		CALL rst75testlocation
+1567   1629 F3          		DI
+1568   162A 7E          		MOV A,M
+1569   162B FB          		EI
+1570   162C C9          		RET
+1571   162D             	
+1572   162D             ; ======================================================
+1573   162D             ; Storage for RX Buffer 2-bytes
+1574   162D             ; ======================================================
+1575   162D             rxbuffer:
+1576   162D F5          		PUSH PSW
+1577   162E D5          		PUSH D
+1578   162F CD DE 15    		CALL stackstart
+1579   1632 EB          		XCHG	
+1580   1633 D1          		POP D
+1581   1634 7D          		MOV A,L
+1582   1635 C6 1A       		ADI rxbuffermem ; Add 18 to Stack start
+1583   1637 6F          		MOV L,A
+1584   1638 F1          		POP PSW
+1585   1639 C9          		RET		
+1586   163A             			
+1587   163A             ; ======================================================
+1588   163A             ; Get RST5.5 Test Store
+1589   163A             ; ======================================================
+1590   163A             rst55testlocation:
+1591   163A F5          		PUSH PSW
+1592   163B D5          		PUSH D
+1593   163C CD DE 15    		CALL stackstart
+1594   163F EB          		XCHG	
+1595   1640 D1          		POP D
+1596   1641 7D          		MOV A,L
+1597   1642 C6 1E       		ADI rst55testmem ; Add 22 to Stack start
+1598   1644 6F          		MOV L,A
+1599   1645 F1          		POP PSW
+1600   1646 C9          		RET		
+1601   1647             	
+1602   1647             ; ======================================================
+1603   1647             ; Keyboard storage area
+1604   1647             ; ======================================================
+1605   1647             getkeyboardstorage:
+1606   1647 F5          		PUSH PSW
+1607   1648 D5          		PUSH D
+1608   1649 CD DE 15    		CALL stackstart
+1609   164C EB          		XCHG	
+1610   164D D1          		POP D
+1611   164E 7D          		MOV A,L
+1612   164F C6 22       		ADI keyboardmem  ; Add 24 to Stack start
+1613   1651 6F          		MOV L,A
+1614   1652 F1          		POP PSW
+1615   1653 C9          		RET		
+1616   1654             
+1617   1654             ; ======================================================
+1618   1654             ; GET Cassette Sync Read storage area
+1619   1654             ; ======================================================
+1620   1654             getcasstorage:
+1621   1654 E5          		PUSH H
+1622   1655 21 00 00    		LXI H,0
+1623   1658 39          		DAD SP
+1624   1659 7C          		MOV A,H
+1625   165A E6 E0       		ANI 0E0H
+1626   165C 67          		MOV H,A
+1627   165D 2E 0C       		MVI L,casstoragemem ; 12
+1628   165F 7E          		MOV A,M
+1629   1660 E1          		POP H
+1630   1661 C9          		RET	
+1631   1662             
+1632   1662             ; ======================================================
+1633   1662             ; PUT Cassette Sync Read storage area
+1634   1662             ; ======================================================
+1635   1662             putcasstorage:
+1636   1662 E5          		PUSH H
+1637   1663 F5          		PUSH PSW
+1638   1664 21 00 00    		LXI H,0
+1639   1667 39          		DAD SP
+1640   1668 7C          		MOV A,H
+1641   1669 E6 E0       		ANI 0E0H
+1642   166B 67          		MOV H,A
+1643   166C 2E 0C       		MVI L,casstoragemem ; 12
+1644   166E F1          		POP PSW
+1645   166F 77          		MOV M,A
+1646   1670 E1          		POP H
+1647   1671 C9          		RET	
+1648   1672             								
+1649   1672             ; ======================================================
+1650   1672             ; Move B bytes from M to (DE)
+1651   1672             ; ======================================================
+1652   1672             movemem: ; 2542H
+1653   1672 7E          		MOV A,M
+1654   1673 12          		STAX D
+1655   1674 23          		INX H
+1656   1675 13          		INX D
+1657   1676 05          		DCR B
+1658   1677 C2 72 16    		JNZ movemem	;2542H Move B bytes from M to (DE)
+1659   167A C9          		RET
+1660   167B             
+1661   167B             ; **********************************************************
+1662   167B             ; Debug Helper routines
+1663   167B             ; **********************************************************
+1664   167B             ; ======================================================
+1665   167B             ; HEX Dump memory (HL) to Diagnostic LCD on bottom line
+1666   167B             ; ======================================================
+1667   167B             dumpmem:
+1668   167B F5          		PUSH PSW
+1669   167C C5          		PUSH B
+1670   167D E5          		PUSH H
+1671   167E             
+1672   167E 3E C0       		MVI A,0C0H
+1673   1680 CD B1 16    		CALL putins
+1674   1683             
+1675   1683 06 08       		MVI B,8
+1676   1685             dumploop:
+1677   1685 7E          		MOV A,M
+1678   1686 CD DC 16    		CALL prthex
+1679   1689 23          		INX H
+1680   168A 05          		DCR B
+1681   168B C2 85 16    		JNZ dumploop
+1682   168E             
+1683   168E E1          		POP H
+1684   168F C1          		POP B
+1685   1690 F1          		POP PSW
+1686   1691 C9          		RET
+1687   1692             
+1688   1692             ; ======================================================
+1689   1692             ; HEX Dump HL
+1690   1692             ; ======================================================
+1691   1692             dumpHL:
+1692   1692 F5          		PUSH PSW
+1693   1693 C5          		PUSH B
+1694   1694 E5          		PUSH H
+1695   1695             
+1696   1695 3E 80       		MVI A,080H
+1697   1697 CD B1 16    		CALL putins
+1698   169A             
+1699   169A 7C          		MOV A,H
+1700   169B CD DC 16    		CALL prthex
+1701   169E 7D          		MOV A,L
+1702   169F CD DC 16    		CALL prthex
+1703   16A2             
+1704   16A2 E1          		POP H
+1705   16A3 C1          		POP B
+1706   16A4 F1          		POP PSW
+1707   16A5 C9          		RET
+1708   16A6             
+1709   16A6             ; ==========================================================
+1710   16A6             ; PUT Char on Diagnostic LCD. A contains character
+1711   16A6             ; ==========================================================
+1712   16A6             putch: 
+1713   16A6 C5          		PUSH B           ; Save BC
+1714   16A7             
+1715   16A7 32 01 00    		STA lcddata    	 ; Send char to LCD		
+1716   16AA 0E 10       		MVI C,16         ; Counter 16 	
+1717   16AC CD 03 17    		CALL shortdelay
+1718   16AF             		
+1719   16AF C1          		POP B	
+1720   16B0 C9          		RET
+1721   16B1             		
+1722   16B1             ; ==========================================================
+1723   16B1             ; PUT instruction to Diagnostic LCD.  A contains instruction
+1724   16B1             ; ==========================================================
+1725   16B1             putins:
+1726   16B1 C5          		PUSH B           ; Save BC
+1727   16B2             
+1728   16B2 32 00 00    		STA lcdins    	 ; Send ins to LCD		
+1729   16B5 0E 10       		MVI C,16         ; Counter 16 	
+1730   16B7 CD 03 17    		CALL shortdelay
+1731   16BA             			
+1732   16BA C1          		POP B			
+1733   16BB C9          		RET	
+1734   16BC             
+1735   16BC             ; ==========================================================
+1736   16BC             ; PUT String on Diagnostic LCD HL points to string
+1737   16BC             ; ==========================================================
+1738   16BC             putstr:
+1739   16BC F5          		PUSH PSW
+1740   16BD             putsloop:
+1741   16BD 7E          		MOV A,M   	     ; H = Current Character
+1742   16BE FE 00       		CPI 0H           ; Check end of table
+1743   16C0 CA CA 16    		JZ putstrexit       
+1744   16C3 CD A6 16    		CALL putch       ; Write to screen
+1745   16C6 23          		INX H            ; Get next Char
+1746   16C7 C3 BD 16    		JMP putsloop
+1747   16CA             		
+1748   16CA             putstrexit:
+1749   16CA F1          		POP PSW
+1750   16CB C9          		RET
+1751   16CC             
+1752   16CC             ; ==========================================================
+1753   16CC             ; Print A as 2 HEX digits
+1754   16CC             ; ==========================================================
+1755   16CC             hexchar: 
+1756   16CC 30 31 32 33 		.text "0123456789ABCDEF"
+1756   16D0 34 35 36 37 
+1756   16D4 38 39 41 42 
+1756   16D8 43 44 45 46 
+1757   16DC             prthex:
+1758   16DC F5          		PUSH PSW
+1759   16DD E5          		PUSH H
+1760   16DE C5          		PUSH B
+1761   16DF D5          		PUSH D
+1762   16E0             		
+1763   16E0 06 00       		MVI B,0
+1764   16E2             		
+1765   16E2 21 CC 16    		LXI H,hexchar ; Point to ASCII table
+1766   16E5 57          		MOV D,A			; Store away A
+1767   16E6 1F          		RAR 
+1768   16E7 1F          		RAR
+1769   16E8 1F          		RAR
+1770   16E9 1F          		RAR
+1771   16EA E6 0F       		ANI 00FH        ; Get Upper Digit
+1772   16EC 4F          		MOV C,A		
+1773   16ED 09          		DAD B
+1774   16EE 7E          		MOV A,M
+1775   16EF CD A6 16    		CALL putch      ; Print upper Digit
+1776   16F2             
+1777   16F2 21 CC 16    		LXI H,hexchar ; Point to ASCII table		
+1778   16F5 7A          		MOV A,D
+1779   16F6 E6 0F       		ANI 00FH 		; Get Bottom Digit
+1780   16F8 4F          		MOV C,A
+1781   16F9 09          		DAD B
+1782   16FA 7E          		MOV A,M
+1783   16FB CD A6 16    		CALL putch      ; Print Bottom Digit
+1784   16FE             		
+1785   16FE D1          		POP D
+1786   16FF C1          		POP B
+1787   1700 E1          		POP H
+1788   1701 F1          		POP PSW
+1789   1702 C9          		RET		
+1790   1703             				
+1791   1703             ; ==========================================================
+1792   1703             ; Short delay.  C = loop counter
+1793   1703             ; ==========================================================
+1794   1703             shortdelay: ;7657H
+1795   1703 0D          		DCR C           ; Decrement C: 4
+1796   1704 C2 03 17    		JNZ shortdelay  ; Loop until C = 0: 7 = 11 = 4.45us
+1797   1707 C9          		RET
+1798   1708             
+1799   1708             ; ======================================================
+1800   1708             ; Disable Background task & barcode interrupts
+1801   1708             ; ======================================================
+1802   1708             disablebackground: ;765CH
+1803   1708 F3          		DI             ; Disable interrupts
+1804   1709 3E 1D       		MVI A,1DH      ; Load SIM mask to disable RST 5.5 & 7.5
+1805   170B 30          		SIM            ; Set new interrupt mask (disable Background & barcode)
+1806   170C FB          		EI             ; Re-enable interrupts
+1807   170D C9          		RET
+1808   170E             
+1809   170E             ; ==========================================================
+1810   170E             ; Clear Diagnostic LCD Screen
+1811   170E             ; ==========================================================
+1812   170E             clrscreen:
+1813   170E             		;LCD CLEAR
+1814   170E 3E 01       		MVI A,lcdclr   ; LCD Clear
+1815   1710 32 00 00    		STA lcdins
+1816   1713             		
+1817   1713             		; Wait 1.64ms		
+1818   1713             		; Wait 800us
+1819   1713 06 02       		MVI B,2
+1820   1715             delayclrs:
+1821   1715 0E C8       		MVI C,200      ; Counter 190 	
+1822   1717             delayclr:
+1823   1717 0D          		DCR C          ; Decrement C: 4
+1824   1718 C2 17 17    		JNZ delayclr    ; Loop until C = 0: 7 = 11 = 4.45us		
+1825   171B             		
+1826   171B 05          		DCR B
+1827   171C C2 15 17    		JNZ delayclrs	
+1828   171F             
+1829   171F 3E 06       		MVI A,lcdmode
+1830   1721 CD B1 16    		Call putins
+1831   1724             
+1832   1724 C9          		RET
+1833   1725             		
+1834   1725             ; ==========================================================
+1835   1725             ; Wait for 2s	
+1836   1725             ; ==========================================================
+1837   1725             wait2seconds:
+1838   1725 3E 02       		MVI A,2
+1839   1727             wait2secondsloop:
+1840   1727 CD 3B 17    		CALL longdelay
+1841   172A 3D          		DCR A
+1842   172B C2 27 17    		JNZ wait2secondsloop
+1843   172E C9          		RET
+1844   172F             
+1845   172F             ; ==========================================================
+1846   172F             ; Pause between tests	
+1847   172F             ; ==========================================================
+1848   172F             diagscreenpause:
+1849   172F C5          		PUSH B
+1850   1730             		
+1851   1730 06 06       		MVI B,6
+1852   1732             		
+1853   1732             diagscreenpauseloop:
+1854   1732 CD 3B 17    		CALL longdelay
+1855   1735 05          		DCR B
+1856   1736 C2 32 17    		JNZ diagscreenpauseloop
+1857   1739             		
+1858   1739 C1          		POP B
+1859   173A C9          		RET
+1860   173B             
+1861   173B             ; ==========================================================
+1862   173B             ; Long Delay routine set for 0.5s	
+1863   173B             ; ==========================================================
+1864   173B             longdelay:
+1865   173B F5          		PUSH PSW
+1866   173C C5          		PUSH B
+1867   173D E5          		PUSH H
+1868   173E 06 02       		MVI B,2
+1869   1740             waithalflong:
+1870   1740 21 50 C3    		LXI H,0C350H   ; Load 16-bit delay counter for a 1s Loop
+1871   1743             waithalflooplong:
+1872   1743 2B          		DCX H         ; Decrement delay counter: 6
+1873   1744 7C          		MOV A,H       ; Test count for 0: 4
+1874   1745 B5          		ORA L         ; Test lower byte: 4
+1875   1746 C2 43 17    		JNZ waithalflooplong  ; wait for zero count: 7 = 21cycles = 8.54us * 65536 = 0.55s
+1876   1749             
+1877   1749 05          		DCR B
+1878   174A C2 40 17    		JNZ waithalflong
+1879   174D             		
+1880   174D E1          		POP H
+1881   174E C1          		POP B
+1882   174F F1          		POP PSW
+1883   1750 C9          		RET
+1884   1751             				
+1885   1751             ; ==========================================================
+1886   1751             ; Diagnostic LCD Strings	
+1887   1751             ; ==========================================================
+1888   1751             passstr:		
+1889   1751 20 50 41 53 		.text " PASS"
+1889   1755 53 
+1890   1756 00          		.db   0
+1891   1757             sysfailstr:
+1892   1757             lcdfailstr:
+1893   1757             piofailstr:	
+1894   1757             clkfailstr:
+1895   1757             testfailstr:
+1896   1757             lptfailstr:
+1897   1757             dongledatafail:
+1898   1757             loopbackfail:
+1899   1757             ;		.text "0123456789ABCDEF"
+1900   1757 20 46 41 49 		.text " FAIL"
+1900   175B 4C 
+1901   175C 00          		.db   0
+1902   175D             testdone:	
+1903   175D 20 44 4F 4E 		.text " DONE!"
+1903   1761 45 21 
+1904   1763 00          		.db   0
+1905   1764             ramstr:		
+1906   1764 50 49 4F 20 		.text "PIO "
+1907   1768 00          		.db   0
+1908   1769             piostr:		
+1909   1769 50 49 4F 20 		.text "PIO "
+1910   176D 00          		.db   0
+1911   176E             kbdstr:	
+1912   176E 4B 42 44 20 		.text "KBD "
+1913   1772 00          		.db   0
+1914   1773             lcdstr:	
+1915   1773 4C 43 44 20 		.text "LCD "
+1916   1777 00          		.db   0
+1917   1778             lcdfound:	
+1918   1778 20 46 4F 55 		.text " FOUND "
+1918   177C 4E 44 20 
+1919   177F 00          		.db   0		
+1920   1780             lcddone:
+1921   1780 20 4C 43 44 		.text " LCD OK?"
+1921   1784 20 4F 4B 3F 
+1922   1788 00          		.db   0
+1923   1789             clkteststr:
+1924   1789 43 4C 4B 20 		.text "CLK IC " 
+1924   178D 49 43 20 
+1925   1790 00          		.db 0
+1926   1791             donglestrdata:
+1927   1791 44 4E 47 4C 		.text "DNGL-AD7-0 " 
+1927   1795 2D 41 44 37 
+1927   1799 2D 30 20 
+1928   179C 00          		.db 0
+1929   179D             donglestrins1:
+1930   179D 44 4E 47 4C 		.text "DNGL-C20-27" 
+1930   17A1 2D 43 32 30 
+1930   17A5 2D 32 37 
+1931   17A8 00          		.db 0
+1932   17A9             donglestrins2:
+1933   17A9 44 4E 47 4C 		.text "DNGL-C28-29" 
+1933   17AD 2D 43 32 38 
+1933   17B1 2D 32 39 
+1934   17B4 00          		.db 0
+1935   17B5             dongleins2data:
+1936   17B5 52 53 54 20 		.text "RST X CS28-29 X"
+1936   17B9 58 20 43 53 
+1936   17BD 32 38 2D 32 
+1936   17C1 39 20 58 
+1937   17C4 00          		.db 0
+1938   17C5             donglestrstat:
+1939   17C5 57 52 20 58 		.text "WR XX RD XX     "
+1939   17C9 58 20 52 44 
+1939   17CD 20 58 58 20 
+1939   17D1 20 20 20 20 
+1940   17D5 00          		.db 0
+1941   17D6             loopbackstrdata:
+1942   17D6 4B 45 59 20 		.text "KEY LOOPED " 
+1942   17DA 4C 4F 4F 50 
+1942   17DE 45 44 20 
+1943   17E1 00          		.db 0
+1944   17E2             loopbackstrstat:
+1945   17E2 57 52 20 58 		.text "WR XX RD XX     "
+1945   17E6 58 20 52 44 
+1945   17EA 20 58 58 20 
+1945   17EE 20 20 20 20 
+1946   17F2 00          		.db 0
+1947   17F3             kbdteststr:
+1948   17F3 4B 45 59 42 		.text "KEYBOARD " 
+1948   17F7 4F 41 52 44 
+1948   17FB 20 
+1949   17FC 00          		.db 0
+1950   17FD             keypressedstr:
+1951   17FD 4B 45 59 3A 		.text "KEY: " 
+1951   1801 20 
+1952   1802 00          		.db 0
+1953   1803             kbdtestfailstr:
+1954   1803 54 45 53 54 		.text "TEST FAILED     " 
+1954   1807 20 46 41 49 
+1954   180B 4C 45 44 20 
+1954   180F 20 20 20 20 
+1955   1813 00          		.db 0
+1956   1814             kbdtestdonestr:
+1957   1814 54 45 53 54 		.text "TEST COMPLETED  " 
+1957   1818 20 43 4F 4D 
+1957   181C 50 4C 45 54 
+1957   1820 45 44 20 20 
+1958   1824 00          		.db 0
+1959   1825             rst75teststr:
+1960   1825 52 53 54 20 		.text "RST 7.5 "
+1960   1829 37 2E 35 20 
+1961   182D 00          		.db 0
+1962   182E             sysbusteststr:
+1963   182E 53 59 53 20 		.text "SYS BUS         "
+1963   1832 42 55 53 20 
+1963   1836 20 20 20 20 
+1963   183A 20 20 20 20 
+1964   183E 00          		.db 0
+1965   183F             systeststr:
+1966   183F 57 52 20 58 		.text "WR XX RD XX S xx"
+1966   1843 58 20 52 44 
+1966   1847 20 58 58 20 
+1966   184B 53 20 78 78 
+1967   184F 00          		.db 0
+1968   1850             rst65teststr:
+1969   1850 43 54 52 4C 		.text "CTRL BITS       "
+1969   1854 20 42 49 54 
+1969   1858 53 20 20 20 
+1969   185C 20 20 20 20 
+1970   1860 00          		.db 0
+1971   1861             dsrteststr:
+1972   1861 52 54 2F 43 		.text "RT/CT X DS/DT X "
+1972   1865 54 20 58 20 
+1972   1869 44 53 2F 44 
+1972   186D 54 20 58 20 
+1973   1871 00          		.db 0
+1974   1872             loopbackteststr:
+1975   1872 4C 4F 4F 50 		.text "LOOPBACK TEST   "
+1975   1876 42 41 43 4B 
+1975   187A 20 54 45 53 
+1975   187E 54 20 20 20 
+1976   1882 00          		.db 0
+1977   1883             loopbackstatstr:
+1978   1883 43 20 78 78 		.text "C xx TX xx RX xx"
+1978   1887 20 54 58 20 
+1978   188B 78 78 20 52 
+1978   188F 58 20 78 78 
+1979   1893 00          		.db 0		
+1980   1894             loopbackfailstr:
+1981   1894 4C 4F 4F 50 		.text "LOOPBACK FAIL   "
+1981   1898 42 41 43 4B 
+1981   189C 20 46 41 49 
+1981   18A0 4C 20 20 20 
+1982   18A4 00          		.db 0
+1983   18A5             loopbackpassstr:
+1984   18A5 4C 4F 4F 50 		.text "LOOPBACK PASS   "
+1984   18A9 42 41 43 4B 
+1984   18AD 20 50 41 53 
+1984   18B1 53 20 20 20 
+1985   18B5 00          		.db 0
+1986   18B6             txfailstr: 
+1987   18B6 54 58 20 46 		.text "TX Failed       "
+1987   18BA 61 69 6C 65 
+1987   18BE 64 20 20 20 
+1987   18C2 20 20 20 20 
+1988   18C6 00          		.db 0
+1989   18C7             rxfailstr: 
+1990   18C7 52 58 20 46 		.text "RX Failed       "
+1990   18CB 61 69 6C 65 
+1990   18CF 64 20 20 20 
+1990   18D3 20 20 20 20 
+1991   18D7 00          		.db 0
+1992   18D8             lptteststr:
+1993   18D8 4C 50 54 20 		.text "LPT I/F "
+1993   18DC 49 2F 46 20 
+1994   18E0 00          		.db 0
+1995   18E1             lptloopteststr:
+1996   18E1 57 52 20 58 		.text "WR XX RD XX"
+1996   18E5 58 20 52 44 
+1996   18E9 20 58 58 
+1997   18EC 00          		.db 0
+1998   18ED             nbusyteststr:
+1999   18ED 42 75 73 79 		.text "Busy- ??        "
+1999   18F1 2D 20 3F 3F 
+1999   18F5 20 20 20 20 
+1999   18F9 20 20 20 20 
+2000   18FD 00          		.db 0
+2001   18FE             busyteststr:
+2002   18FE 42 75 73 79 		.text "Busy  ??        "
+2002   1902 20 20 3F 3F 
+2002   1906 20 20 20 20 
+2002   190A 20 20 20 20 
+2003   190E 00          		.db 0
+2004   190F             rst55teststr:
+2005   190F 42 43 52 20 		.text "BCR I/F "
+2005   1913 49 2F 46 20 
+2006   1917 00          		.db 0
+2007   1918             rst55loopteststr:
+2008   1918 4C 50 20 58 		.text "LP XX CT XX P   "
+2008   191C 58 20 43 54 
+2008   1920 20 58 58 20 
+2008   1924 50 20 20 20 
+2009   1928 00          		.db 0
+2010   1929             casteststr:
+2011   1929 43 41 53 20 		.text "CAS REMOTE      "  ; 11
+2011   192D 52 45 4D 4F 
+2011   1931 54 45 20 20 
+2011   1935 20 20 20 20 
+2012   1939 00          		.db 0
+2013   193A             castestfailstr:
+2014   193A 43 41 53 20 		.text "CAS REMOTE FAIL "  ; 11
+2014   193E 52 45 4D 4F 
+2014   1942 54 45 20 46 
+2014   1946 41 49 4C 20 
+2015   194A 00          		.db 0
+2016   194B             castestpassstr:
+2017   194B 43 41 53 20 		.text "CAS REMOTE PASS "  ; 11
+2017   194F 52 45 4D 4F 
+2017   1953 54 45 20 50 
+2017   1957 41 53 53 20 
+2018   195B 00          		.db 0
+2019   195C             castestaudiostr:
+2020   195C 43 41 53 20 		.text "CAS AUDIO TEST  "  ; 3
+2020   1960 41 55 44 49 
+2020   1964 4F 20 54 45 
+2020   1968 53 54 20 20 
+2021   196C 00          		.db 0
+2022   196D             castestaudiosyncstr:
+2023   196D 53 59 4E 43 		.text "SYNC PASS:      "  ; 3
+2023   1971 20 50 41 53 
+2023   1975 53 3A 20 20 
+2023   1979 20 20 20 20 
+2024   197D 00          		.db 0
+2025   197E             castestaudiosyncfailstr:
+2026   197E 53 59 4E 43 		.text "SYNC FAIL:      "  ; 3
+2026   1982 20 46 41 49 
+2026   1986 4C 3A 20 20 
+2026   198A 20 20 20 20 
+2027   198E 00          		.db 0
+2028   198F             castestaudiodonestr:
+2029   198F 43 41 53 20 		.text "CAS AUDIO DONE  "  ; 3
+2029   1993 41 55 44 49 
+2029   1997 4F 20 44 4F 
+2029   199B 4E 45 20 20 
+2030   199F 00          		.db 0
+2031   19A0             castestoffstr:
+2032   19A0 43 41 53 20 		.text "CAS REMOTE OFF  "  ; 3
+2032   19A4 52 45 4D 4F 
+2032   19A8 54 45 20 4F 
+2032   19AC 46 46 20 20 
+2033   19B0 00          		.db 0
+2034   19B1             castestonstr:
+2035   19B1 43 41 53 20 		.text "CAS REMOTE ON   "  ; 3
+2035   19B5 52 45 4D 4F 
+2035   19B9 54 45 20 4F 
+2035   19BD 4E 20 20 20 
+2036   19C1 00          		.db 0
+2037   19C2             castestplaystr:
+2038   19C2 50 4C 41 59 		.text "PLAY[BLK] ctl-brk"
+2038   19C6 5B 42 4C 4B 
+2038   19CA 5D 20 63 74 
+2038   19CE 6C 2D 62 72 
+2038   19D2 6B 
+2039   19D3 00          		.db 0	
+2040   19D4             castestrecstr:
+2041   19D4 52 45 43 20 		.text "REC [GRY] ctl-brk"
+2041   19D8 5B 47 52 59 
+2041   19DC 5D 20 63 74 
+2041   19E0 6C 2D 62 72 
+2041   19E4 6B 
+2042   19E5 00          		.db 0
+2043   19E6             castestplaystartedstr
+2044   19E6 4C 49 53 54 		.text "LISTENING....   "
+2044   19EA 45 4E 49 4E 
+2044   19EE 47 2E 2E 2E 
+2044   19F2 2E 20 20 20 
+2045   19F6 00          		.db 0
+2046   19F7             castestrecstartedstr
+2047   19F7 53 45 4E 44 		.text "SENDING AUDIO   "
+2047   19FB 49 4E 47 20 
+2047   19FF 41 55 44 49 
+2047   1A03 4F 20 20 20 
+2048   1A07 00          		.db 0
+2049   1A08             stromteststr:
+2050   1A08 53 57 49 54 		.text "SWITCH 2 OPTROM "
+2050   1A0C 43 48 20 32 
+2050   1A10 20 4F 50 54 
+2050   1A14 52 4F 4D 20 
+2051   1A18 00          		.db 0
+2052   1A19             optromfoundstr:
+2053   1A19 4F 50 54 52 		.text "OPTROM SWITCHED "
+2053   1A1D 4F 4D 20 53 
+2053   1A21 57 49 54 43 
+2053   1A25 48 45 44 20 
+2054   1A29 00          		.db 0
+2055   1A2A             nooptromstr:
+2056   1A2A 4F 50 54 52 		.text "OPTROM FAILED  "
+2056   1A2E 4F 4D 20 46 
+2056   1A32 41 49 4C 45 
+2056   1A36 44 20 20 
+2057   1A39 00          		.db 0
+2058   1A3A             stromfailurestr:
+2059   1A3A 4E 4F 20 52 		.text "NO RAM"
+2059   1A3E 41 4D 
+2060   1A40 00          		.db 0
+2061   1A41             ram0used:
+2062   1A41 52 41 4D 20 		.text "RAM 0"
+2062   1A45 30 
+2063   1A46 00          		.db 0
+2064   1A47             ram1used:
+2065   1A47 52 41 4D 20 		.text "RAM 1"
+2065   1A4B 31 
+2066   1A4C 00          		.db 0
+2067   1A4D             ram2used:
+2068   1A4D 52 41 4D 20 		.text "RAM 2"
+2068   1A51 32 
+2069   1A52 00          		.db 0
+2070   1A53             ram3used:
+2071   1A53 52 41 4D 20 		.text "RAM 3"
+2071   1A57 33 
+2072   1A58 00          		.db 0	
+2073   1A59             settingsvalue:
+2074   1A59 53 45 54 54 		.text "SETTINGS:"
+2074   1A5D 49 4E 47 53 
+2074   1A61 3A 
+2075   1A62 00          		.db 0
+2076   1A63             goodbye:
+2077   1A63 50 6F 77 65 		.text "Powering off!   "
+2077   1A67 72 69 6E 67 
+2077   1A6B 20 6F 66 66 
+2077   1A6F 21 20 20 20 
+2078   1A73 00          		.db 0	
+2079   1A74             testcompletestr:
+2080   1A74 57 41 49 54 		.text "WAIT FOR PWR OFF"
+2080   1A78 20 46 4F 52 
+2080   1A7C 20 50 57 52 
+2080   1A80 20 4F 46 46 
+2081   1A84 00          		.db 0
+2082   1A85             versioninfostr:
+2083   1A85 28 63 29 20 		.text "(c) 12/2020 "
+2083   1A89 31 32 2F 32 
+2083   1A8D 30 32 30 20 
+2084   1A91 56 33 2E 32 		VERSION
+2084   1A95 72 6C 
+2085   1A97 00          		.db 0
+2086   1A98             ;		.text "0123456789ABCDEF"
+2087   1A98             ; ==========================================================
+2088   1A98             ; Main LCD Screen Strings for MT100/102
+2089   1A98             ; 	The following strings are used for the LCD test
+2090   1A98             ; ==========================================================
+2091   1A98             tstline0:
+2092   1A98 4D 6F 64 65 		.text "Model 100 Test ROM Version "
+2092   1A9C 6C 20 31 30 
+2092   1AA0 30 20 54 65 
+2092   1AA4 73 74 20 52 
+2092   1AA8 4F 4D 20 56 
+2092   1AAC 65 72 73 69 
+2092   1AB0 6F 6E 20 
+2093   1AB3 56 33 2E 32 		VERSION
+2093   1AB7 72 6C 
+2094   1AB9 20 44 65 63 		.text " Dec 2020*"
+2094   1ABD 20 32 30 32 
+2094   1AC1 30 2A 
+2095   1AC3 00          		.db 0
+2096   1AC4             tstline1:	
+2097   1AC4 21 22 23 24 		.text "!\"#$%&'()*+`-./01234567890:;<=>?@"
+2097   1AC8 25 26 27 28 
+2097   1ACC 29 2A 2B 60 
+2097   1AD0 2D 2E 2F 30 
+2097   1AD4 31 32 33 34 
+2097   1AD8 35 36 37 38 
+2097   1ADC 39 30 3A 3B 
+2097   1AE0 3C 3D 3E 3F 
+2097   1AE4 40 
+2098   1AE5 00          		.db   0	
+2099   1AE6             tstline2:	
+2100   1AE6 41 42 43 44 		.text "ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`"
+2100   1AEA 45 46 47 48 
+2100   1AEE 49 4A 4B 4C 
+2100   1AF2 4D 4E 4F 50 
+2100   1AF6 51 52 53 54 
+2100   1AFA 55 56 57 58 
+2100   1AFE 59 5A 5B 5D 
+2100   1B02 5E 5F 60 
+2101   1B05 00          		.db   0	
+2102   1B06             tstline3:	
+2103   1B06 61 62 63 64 		.text "abcdefghijklmnopqrstuvwxyz{|}~"
+2103   1B0A 65 66 67 68 
+2103   1B0E 69 6A 6B 6C 
+2103   1B12 6D 6E 6F 70 
+2103   1B16 71 72 73 74 
+2103   1B1A 75 76 77 78 
+2103   1B1E 79 7A 7B 7C 
+2103   1B22 7D 7E 
+2104   1B24 00          		.db   0	
+2105   1B25             tstline4:
+2106   1B25 80 81 82 83 		.db 080H,081H,082H,083H,084H,085H,086H,087H
+2106   1B29 84 85 86 87 
+2107   1B2D 88 89 8A 8B 		.db 088H,089H,08Ah,08BH,08CH,08DH,08EH,08FH		
+2107   1B31 8C 8D 8E 8F 
+2108   1B35 90 98 92 93 		.db 090H,098H,092h,093H,094H,095H,096H,097H
+2108   1B39 94 95 96 97 
+2109   1B3D 98 99 9A 9B 		.db 098H,099H,09Ah,09BH,09CH,09DH,09EH,09FH
+2109   1B41 9C 9D 9E 9F 
+2110   1B45 00          		.db 0
+2111   1B46             tstline5:
+2112   1B46 A0 A1 A2 A3 		.db 0A0H,0A1H,0A2H,0A3H,0A4H,0A5H,0A6H,0A7H
+2112   1B4A A4 A5 A6 A7 
+2113   1B4E A8 A9 AA AB 		.db 0A8H,0A9H,0AAH,0ABH,0ACH,0ADH,0AEH,0AFH		
+2113   1B52 AC AD AE AF 
+2114   1B56 B0 B1 B2 B3 		.db 0B0H,0B1H,0B2H,0B3H,0B4H,0B5H,0B6H,0B7H
+2114   1B5A B4 B5 B6 B7 
+2115   1B5E B8 B9 BA BB 		.db 0B8H,0B9H,0BAH,0BBH,0BCH,0BDH,0BEH,0BFH
+2115   1B62 BC BD BE BF 
+2116   1B66 00          		.db 0
+2117   1B67             tstline6:
+2118   1B67 C0 C1 C2 C3 		.db 0C0H,0C1H,0C2H,0C3H,0C4H,0C5H,0C6H,0C7H
+2118   1B6B C4 C5 C6 C7 
+2119   1B6F C8 C9 CA CB 		.db 0C8H,0C9H,0CAH,0CBH,0CCH,0CDH,0CEH,0CFH		
+2119   1B73 CC CD CE CF 
+2120   1B77 D0 D1 D2 D3 		.db 0D0H,0D1H,0D2H,0D3H,0D4H,0D5H,0D6H,0D7H
+2120   1B7B D4 D5 D6 D7 
+2121   1B7F D8 D9 DA DB 		.db 0D8H,0D9H,0DAH,0DBH,0DCH,0DDH,0DEH,0CFH
+2121   1B83 DC DD DE CF 
+2122   1B87 00          		.db 0
+2123   1B88             
+2124   1B88             tstline7:
+2125   1B88 E0 E1 E2 E3 		.db 0E0H,0E1H,0E2H,0E3H,0E4H,0E5H,0E6H,0E7H
+2125   1B8C E4 E5 E6 E7 
+2126   1B90 E8 E9 EA EB 		.db 0E8H,0E9H,0EAH,0EBH,0ECH,0EDH,0EEH,0EFH		
+2126   1B94 EC ED EE EF 
+2127   1B98 F0 F1 F2 F3 		.db 0F0H,0F1H,0F2H,0F3H,0F4H,0F5H,0F6H,0F7H
+2127   1B9C F4 F5 F6 F7 
+2128   1BA0 F8 F9 FA FB 		.db 0F8H,0F9H,0FAH,0FBH,0FCH,0FDH,0FEH,0FFH
+2128   1BA4 FC FD FE FF 
+2129   1BA8 00          		.db 0
+2130   1BA9             
+2131   1BA9             ; ==========================================================
+2132   1BA9             ; RAM TEST Data used buy the RAM and all port tests
+2133   1BA9             ; ==========================================================
+2134   1BA9             piotstdata:
+2135   1BA9             ramtstdata:
+2136   1BA9             dongletestdata:
+2137   1BA9             loopbacktstdata:
+2138   1BA9 00          		.db 000H
+2139   1BAA 01          		.db	001H
+2140   1BAB 02          		.db	002H
+2141   1BAC 04          		.db	004H
+2142   1BAD 08          		.db	008H
+2143   1BAE 10          		.db	010H
+2144   1BAF 20          		.db	020H
+2145   1BB0 40          		.db	040H
+2146   1BB1 80          		.db	080H
+2147   1BB2 FF          		.db	0FFH
+2148   1BB3 55          		.db	055H
+2149   1BB4 AA          		.db	0AAH
+2150   1BB5             eotramtests: .equ 0FEH
+2151   1BB5 FE          		.db	0FEH  ; End of table marker
+2152   1BB6             
+2153   1BB6             ; ======================================================
+2154   1BB6             ; 8155 PIO chip bit patterns for LCD drivers
+2155   1BB6             ; ======================================================
+2156   1BB6             ; 8155 PIO chip bit patterns for Upper LCD drivers
+2157   1BB6             lcduppercs: ;7551H
+2158   1BB6 01 00 00 01 	.db   001H,000H,000H,001H,000H,006H,001H,000H
+2158   1BBA 00 06 01 00 
+2159   1BBE 0C 01 00 12 	.db   00CH,001H,000H,012H,001H,000H,018H,001H
+2159   1BC2 01 00 18 01 
+2160   1BC6 00 1E 01 00 	.db   000H,01EH,001H,000H,024H,001H,000H,02AH
+2160   1BCA 24 01 00 2A 
+2161   1BCE 01 00 30 02 	.db   001H,000H,030H,002H,000H,004H,002H,000H
+2161   1BD2 00 04 02 00 
+2162   1BD6 0A 02 00 10 	.db   00AH,002H,000H,010H,002H,000H,016H,002H
+2162   1BDA 02 00 16 02 
+2163   1BDE 00 1C 02 00 	.db   000H,01CH,002H,000H,022H,002H,000H,028H
+2163   1BE2 22 02 00 28 
+2164   1BE6 02 00 2E 04 	.db   002H,000H,02EH,004H,000H,002H,004H,000H
+2164   1BEA 00 02 04 00 
+2165   1BEE 08 04 00 0E 	.db   008H,004H,000H,00EH,004H,000H,014H,004H
+2165   1BF2 04 00 14 04 
+2166   1BF6 00 1A 04 00 	.db   000H,01AH,004H,000H,020H,004H,000H,026H
+2166   1BFA 20 04 00 26 
+2167   1BFE 04 00 2C 08 	.db   004H,000H,02CH,008H,000H,000H,008H,000H
+2167   1C02 00 00 08 00 
+2168   1C06 06 08 00 0C 	.db   006H,008H,000H,00CH,008H,000H,012H,008H
+2168   1C0A 08 00 12 08 
+2169   1C0E 00 18 08 00 	.db   000H,018H,008H,000H,01EH,008H,000H,024H
+2169   1C12 1E 08 00 24 
+2170   1C16 08 00 2A 08 	.db   008H,000H,02AH,008H,000H,030H,010H,000H
+2170   1C1A 00 30 10 00 
+2171   1C1E 04 10 00 0A 	.db   004H,010H,000H,00AH,010H,000H,010H,010H
+2171   1C22 10 00 10 10 
+2172   1C26 00 16 10 00 	.db   000H,016H,010H,000H,01CH,010H,000H,022H
+2172   1C2A 1C 10 00 22 
+2173   1C2E             ; 8155 PIO chip bit patterns for lower LCD drivers
+2174   1C2E             lcdlowercs: ;75C9H
+2175   1C2E 20 00 00 20 	.db   020H,000H,000H,020H,000H,006H,020H,000H
+2175   1C32 00 06 20 00 
+2176   1C36 0C 20 00 12 	.db   00CH,020H,000H,012H,020H,000H,018H,020H
+2176   1C3A 20 00 18 20 
+2177   1C3E 00 1E 20 00 	.db   000H,01EH,020H,000H,024H,020H,000H,02AH
+2177   1C42 24 20 00 2A 
+2178   1C46 20 00 30 40 	.db   020H,000H,030H,040H,000H,004H,040H,000H
+2178   1C4A 00 04 40 00 
+2179   1C4E 0A 40 00 10 	.db   00AH,040H,000H,010H,040H,000H,016H,040H
+2179   1C52 40 00 16 40 
+2180   1C56 00 1C 40 00 	.db   000H,01CH,040H,000H,022H,040H,000H,028H
+2180   1C5A 22 40 00 28 
+2181   1C5E 40 00 2E 80 	.db   040H,000H,02EH,080H,000H,002H,080H,000H
+2181   1C62 00 02 80 00 
+2182   1C66 08 80 00 0E 	.db   008H,080H,000H,00EH,080H,000H,014H,080H
+2182   1C6A 80 00 14 80 
+2183   1C6E 00 1A 80 00 	.db   000H,01AH,080H,000H,020H,080H,000H,026H
+2183   1C72 20 80 00 26 
+2184   1C76 80 00 2C 00 	.db   080H,000H,02CH,000H,001H,000H,000H,001H
+2184   1C7A 01 00 00 01 
+2185   1C7E 06 00 01 0C 	.db   006H,000H,001H,00CH,000H,001H,012H,000H
+2185   1C82 00 01 12 00 
+2186   1C86 01 18 00 01 	.db   001H,018H,000H,001H,01EH,000H,001H,024H
+2186   1C8A 1E 00 01 24 
+2187   1C8E 00 01 2A 00 	.db   000H,001H,02AH,000H,001H,030H,000H,002H
+2187   1C92 01 30 00 02 
+2188   1C96 04 00 02 0A 	.db   004H,000H,002H,00AH,000H,002H,010H,000H
+2188   1C9A 00 02 10 00 
+2189   1C9E 02 16 00 02 	.db   002H,016H,000H,002H,01CH,000H,002H,022H
+2189   1CA2 1C 00 02 22 
+2190   1CA6             
+2191   1CA6             ; ======================================================
+2192   1CA6             ; 8155 PIO chip bit patterns to enable all LCD drivers
+2193   1CA6             ; ======================================================
+2194   1CA6             lcdalldrivers: ;7641H
+2195   1CA6 FF 03       		.db   0FFH,003H
+2196   1CA8             
+2197   1CA8             ; ======================================================
+2198   1CA8             ; 8155 PIO chip bit patterns for LCD drivers
+2199   1CA8             ; ======================================================
+2200   1CA8             lcdchipbitpatterns: ;7643H
+2201   1CA8 01 00 02 00 		.db 001H,000H,002H,000H,004H,000H,008H,000H
+2201   1CAC 04 00 08 00 
+2202   1CB0 10 00 20 00 		.db 010H,000H,020H,000H,040H,000H,080H,000H
+2202   1CB4 40 00 80 00 
+2203   1CB8 00 01 00 02 		.db 000H,001H,000H,002H
+2204   1CBC             	
+2205   1CBC             ; ======================================================
+2206   1CBC             ; DVI command table - sent to external DVI
+2207   1CBC             ; ======================================================
+2208   1CBC             dvicmds: ;770BH
+2209   1CBC 02 01 00 00 		.db 002H,001H,000H,000H,001H,00H
+2209   1CC0 01 00 
+2210   1CC2             ; ======================================================
+2211   1CC2             ; LCD char generator format table (20H-7FH)
+2212   1CC2             ; ======================================================
+2213   1CC2             lcdasciitable: ;7711H
+2214   1CC2 00 00 00 00 		.db   000H,000H,000H,000H,000H,000H,000H,04FH
+2214   1CC6 00 00 00 4F 
+2215   1CCA 00 00 00 07 		.db   000H,000H,000H,007H,000H,007H,000H,014H
+2215   1CCE 00 07 00 14 
+2216   1CD2 7F 14 7F 14 		.db   07FH,014H,07FH,014H,024H,02AH,07FH,02AH
+2216   1CD6 24 2A 7F 2A 
+2217   1CDA 12 23 13 08 		.db   012H,023H,013H,008H,064H,062H,03AH,045H
+2217   1CDE 64 62 3A 45 
+2218   1CE2 4A 30 28 00 		.db   04AH,030H,028H,000H,004H,002H,001H,000H
+2218   1CE6 04 02 01 00 
+2219   1CEA 00 1C 22 41 		.db   000H,01CH,022H,041H,000H,000H,041H,022H
+2219   1CEE 00 00 41 22 
+2220   1CF2 1C 00 22 14 		.db   01CH,000H,022H,014H,07FH,014H,022H,008H
+2220   1CF6 7F 14 22 08 
+2221   1CFA 08 3E 08 08 		.db   008H,03EH,008H,008H,000H,080H,060H,000H
+2221   1CFE 00 80 60 00 
+2222   1D02 00 08 08 08 		.db   000H,008H,008H,008H,008H,008H,000H,060H
+2222   1D06 08 08 00 60 
+2223   1D0A 60 00 00 40 		.db   060H,000H,000H,040H,020H,010H,008H,004H
+2223   1D0E 20 10 08 04 
+2224   1D12 3E 51 49 45 		.db   03EH,051H,049H,045H,03EH,044H,042H,07FH
+2224   1D16 3E 44 42 7F 
+2225   1D1A 40 40 62 51 		.db   040H,040H,062H,051H,051H,049H,046H,022H
+2225   1D1E 51 49 46 22 
+2226   1D22 41 49 49 36 		.db   041H,049H,049H,036H,018H,014H,012H,07FH
+2226   1D26 18 14 12 7F 
+2227   1D2A 10 47 45 45 		.db   010H,047H,045H,045H,029H,011H,03CH,04AH
+2227   1D2E 29 11 3C 4A 
+2228   1D32 49 49 30 03 		.db   049H,049H,030H,003H,001H,079H,005H,003H
+2228   1D36 01 79 05 03 
+2229   1D3A 36 49 49 49 		.db   036H,049H,049H,049H,036H,006H,049H,049H
+2229   1D3E 36 06 49 49 
+2230   1D42 29 1E 00 00 		.db   029H,01EH,000H,000H,024H,000H,000H,000H
+2230   1D46 24 00 00 00 
+2231   1D4A 80 64 00 00 		.db   080H,064H,000H,000H,008H,01CH,036H,063H
+2231   1D4E 08 1C 36 63 
+2232   1D52 41 14 14 14 		.db   041H,014H,014H,014H,014H,014H,041H,063H
+2232   1D56 14 14 41 63 
+2233   1D5A 36 1C 08 02 		.db   036H,01CH,008H,002H,001H,051H,009H,006H
+2233   1D5E 01 51 09 06 
+2234   1D62 32 49 79 41 		.db   032H,049H,079H,041H,03EH,07CH,012H,011H
+2234   1D66 3E 7C 12 11 
+2235   1D6A 12 7C 41 7F 		.db   012H,07CH,041H,07FH,049H,049H,036H,01CH
+2235   1D6E 49 49 36 1C 
+2236   1D72 22 41 41 22 		.db   022H,041H,041H,022H,041H,07FH,041H,022H
+2236   1D76 41 7F 41 22 
+2237   1D7A 1C 7F 49 49 		.db   01CH,07FH,049H,049H,049H,041H,07FH,009H
+2237   1D7E 49 41 7F 09 
+2238   1D82 09 09 01 3E 		.db   009H,009H,001H,03EH,041H,049H,049H,03AH
+2238   1D86 41 49 49 3A 
+2239   1D8A 7F 08 08 08 		.db   07FH,008H,008H,008H,07FH,000H,041H,07FH
+2239   1D8E 7F 00 41 7F 
+2240   1D92 41 00 30 40 		.db   041H,000H,030H,040H,041H,03FH,001H,07FH
+2240   1D96 41 3F 01 7F 
+2241   1D9A 08 14 22 41 		.db   008H,014H,022H,041H,07FH,040H,040H,040H
+2241   1D9E 7F 40 40 40 
+2242   1DA2 40 7F 02 0C 		.db   040H,07FH,002H,00CH,002H,07FH,07FH,006H
+2242   1DA6 02 7F 7F 06 
+2243   1DAA 08 30 7F 3E 		.db   008H,030H,07FH,03EH,041H,041H,041H,03EH
+2243   1DAE 41 41 41 3E 
+2244   1DB2 7F 09 09 09 		.db   07FH,009H,009H,009H,006H,03EH,041H,051H
+2244   1DB6 06 3E 41 51 
+2245   1DBA 21 5E 7F 09 		.db   021H,05EH,07FH,009H,019H,029H,046H,026H
+2245   1DBE 19 29 46 26 
+2246   1DC2 49 49 49 32 		.db   049H,049H,049H,032H,001H,001H,07FH,001H
+2246   1DC6 01 01 7F 01 
+2247   1DCA 01 3F 40 40 		.db   001H,03FH,040H,040H,040H,03FH,00FH,030H
+2247   1DCE 40 3F 0F 30 
+2248   1DD2 40 30 0F 7F 		.db   040H,030H,00FH,07FH,020H,018H,020H,07FH
+2248   1DD6 20 18 20 7F 
+2249   1DDA 63 14 08 14 		.db   063H,014H,008H,014H,063H,007H,008H,078H
+2249   1DDE 63 07 08 78 
+2250   1DE2 08 07 61 51 		.db   008H,007H,061H,051H,049H,045H,043H,000H
+2250   1DE6 49 45 43 00 
+2251   1DEA 7F 41 41 00 		.db   07FH,041H,041H,000H,004H,008H,010H,020H
+2251   1DEE 04 08 10 20 
+2252   1DF2 40 00 41 41 		.db   040H,000H,041H,041H,07FH,000H,004H,002H
+2252   1DF6 7F 00 04 02 
+2253   1DFA 01 02 04 40 		.db   001H,002H,004H,040H,040H,040H,040H,040H
+2253   1DFE 40 40 40 40 
+2254   1E02 00 01 02 04 		.db   000H,001H,002H,004H,000H,020H,054H,054H
+2254   1E06 00 20 54 54 
+2255   1E0A 54 78 7F 28 		.db   054H,078H,07FH,028H,044H,044H,038H,038H
+2255   1E0E 44 44 38 38 
+2256   1E12 44 44 44 28 		.db   044H,044H,044H,028H,038H,044H,044H,028H
+2256   1E16 38 44 44 28 
+2257   1E1A 7F 38 54 54 		.db   07FH,038H,054H,054H,054H,018H,008H,008H
+2257   1E1E 54 18 08 08 
+2258   1E22 7E 09 0A 18 		.db   07EH,009H,00AH,018H,0A4H,0A4H,098H,07CH
+2258   1E26 A4 A4 98 7C 
+2259   1E2A 7F 04 04 04 		.db   07FH,004H,004H,004H,078H,000H,044H,07DH
+2259   1E2E 78 00 44 7D 
+2260   1E32 40 00 40 80 		.db   040H,000H,040H,080H,084H,07DH,000H,000H
+2260   1E36 84 7D 00 00 
+2261   1E3A 7F 10 28 44 		.db   07FH,010H,028H,044H,000H,041H,07FH,040H
+2261   1E3E 00 41 7F 40 
+2262   1E42 00 7C 04 78 		.db   000H,07CH,004H,078H,004H,078H,07CH,008H
+2262   1E46 04 78 7C 08 
+2263   1E4A 04 04 78 38 		.db   004H,004H,078H,038H,044H,044H,044H,038H
+2263   1E4E 44 44 44 38 
+2264   1E52 FC 18 24 24 		.db   0FCH,018H,024H,024H,018H,018H,024H,024H
+2264   1E56 18 18 24 24 
+2265   1E5A 18 FC 7C 08 		.db   018H,0FCH,07CH,008H,004H,004H,008H,058H
+2265   1E5E 04 04 08 58 
+2266   1E62 54 54 54 24 		.db   054H,054H,054H,024H,004H,03FH,044H,044H
+2266   1E66 04 3F 44 44 
+2267   1E6A 20 3C 40 40 		.db   020H,03CH,040H,040H,03CH,040H,01CH,020H
+2267   1E6E 3C 40 1C 20 
+2268   1E72 40 20 1C 3C 		.db   040H,020H,01CH,03CH,040H,038H,040H,03CH
+2268   1E76 40 38 40 3C 
+2269   1E7A 44 28 10 28 		.db   044H,028H,010H,028H,044H,01CH,0A0H,0A0H
+2269   1E7E 44 1C A0 A0 
+2270   1E82 90 7C 44 64 		.db   090H,07CH,044H,064H,054H,04CH,044H,000H
+2270   1E86 54 4C 44 00 
+2271   1E8A 08 36 41 41 		.db   008H,036H,041H,041H,000H,000H,077H,000H
+2271   1E8E 00 00 77 00 
+2272   1E92 00 41 41 36 		.db   000H,041H,041H,036H,008H,000H,002H,001H
+2272   1E96 08 00 02 01 
+2273   1E9A 02 04 02 00 		.db   002H,004H,002H,000H,000H,000H,000H,000H
+2273   1E9E 00 00 00 00 
+2274   1EA2             
+2275   1EA2             ; ======================================================
+2276   1EA2             ; LCD char generator shape table (80H-FFH)
+2277   1EA2             ; ======================================================
+2278   1EA2             lcdgraphics: 	; 78F1H
+2279   1EA2 66 77 49 49 		.db   0066H,077H,049H,049H,077H,066H,0FCH,086H
+2279   1EA6 77 66 FC 86 
+2280   1EAA D7 EE FC 00 		.db   00D7H,0EEH,0FCH,000H,07FH,063H,014H,008H
+2280   1EAE 7F 63 14 08 
+2281   1EB2 14 00 78 76 		.db   014H,000H,078H,076H,062H,04AH,00EH,000H
+2281   1EB6 62 4A 0E 00 
+2282   1EBA EE 44 FF FF 		.db   0EEH,044H,0FFH,0FFH,044H,0EEH,00CH,04CH
+2282   1EBE 44 EE 0C 4C 
+2283   1EC2 7F 4C 0C 00 		.db   07FH,04CH,00CH,000H,07CH,056H,07FH,056H
+2283   1EC6 7C 56 7F 56 
+2284   1ECA 7C 00 7D 77 		.db   07CH,000H,07DH,077H,047H,077H,07FH,000H
+2284   1ECE 47 77 7F 00 
+2285   1ED2 00 00 7D 00 		.db   000H,000H,07DH,000H,000H,000H,010H,020H
+2285   1ED6 00 00 10 20 
+2286   1EDA 1C 02 02 02 		.db   01CH,002H,002H,002H,054H,034H,01CH,016H
+2286   1EDE 54 34 1C 16 
+2287   1EE2 15 00 41 63 		.db   015H,000H,041H,063H,055H,049H,063H,000H
+2287   1EE6 55 49 63 00 
+2288   1EEA 24 12 12 24 		.db   024H,012H,012H,024H,012H,000H,044H,044H
+2288   1EEE 12 00 44 44 
+2289   1EF2 5F 44 44 00 		.db   05FH,044H,044H,000H,000H,040H,03EH,001H
+2289   1EF6 00 40 3E 01 
+2290   1EFA 00 00 00 08 		.db   000H,000H,000H,008H,01CH,03EH,000H,000H
+2290   1EFE 1C 3E 00 00 
+2291   1F02 98 F4 12 12 		.db   098H,0F4H,012H,012H,0F4H,098H,0F8H,094H
+2291   1F06 F4 98 F8 94 
+2292   1F0A 12 12 94 F8 		.db   012H,012H,094H,0F8H,014H,022H,07FH,022H
+2292   1F0E 14 22 7F 22 
+2293   1F12 14 00 A0 56 		.db   014H,000H,0A0H,056H,03DH,056H,0A0H,000H
+2293   1F16 3D 56 A0 00 
+2294   1F1A 4C 2A 1D 2A 		.db   04CH,02AH,01DH,02AH,048H,000H,038H,028H
+2294   1F1E 48 00 38 28 
+2295   1F22 39 05 03 0F 		.db   039H,005H,003H,00FH,000H,016H,03DH,016H
+2295   1F26 00 16 3D 16 
+2296   1F2A 00 00 42 25 		.db   000H,000H,042H,025H,015H,028H,054H,022H
+2296   1F2E 15 28 54 22 
+2297   1F32 04 02 3F 02 		.db   004H,002H,03FH,002H,004H,000H,010H,020H
+2297   1F36 04 00 10 20 
+2298   1F3A 7E 20 10 00 		.db   07EH,020H,010H,000H,008H,008H,02AH,01CH
+2298   1F3E 08 08 2A 1C 
+2299   1F42 08 00 08 1C 		.db   008H,000H,008H,01CH,02AH,008H,008H,000H
+2299   1F46 2A 08 08 00 
+2300   1F4A 1C 57 61 57 		.db   01CH,057H,061H,057H,01CH,000H,008H,014H
+2300   1F4E 1C 00 08 14 
+2301   1F52 22 14 08 00 		.db   022H,014H,008H,000H,01EH,022H,044H,022H
+2301   1F56 1E 22 44 22 
+2302   1F5A 1E 00 1C 12 		.db   01EH,000H,01CH,012H,071H,012H,01CH,000H
+2302   1F5E 71 12 1C 00 
+2303   1F62 00 04 02 01 		.db   000H,004H,002H,001H,000H,000H,020H,055H
+2303   1F66 00 00 20 55 
+2304   1F6A 56 54 78 00 		.db   056H,054H,078H,000H,00EH,051H,031H,011H
+2304   1F6E 0E 51 31 11 
+2305   1F72 0A 00 64 7F 		.db   00AH,000H,064H,07FH,045H,045H,020H,000H
+2305   1F76 45 45 20 00 
+2306   1F7A 00 01 02 04 		.db   000H,001H,002H,004H,000H,000H,07FH,010H
+2306   1F7E 00 00 7F 10 
+2307   1F82 10 0F 10 00 		.db   010H,00FH,010H,000H,000H,002H,005H,002H
+2307   1F86 00 02 05 02 
+2308   1F8A 00 00 04 0C 		.db   000H,000H,004H,00CH,01CH,00CH,004H,000H
+2308   1F8E 1C 0C 04 00 
+2309   1F92 00 04 7F 04 		.db   000H,004H,07FH,004H,000H,000H,018H,0A7H
+2309   1F96 00 00 18 A7 
+2310   1F9A A5 E5 18 00 		.db   0A5H,0E5H,018H,000H,07FH,041H,065H,051H
+2310   1F9E 7F 41 65 51 
+2311   1FA2 7F 00 7F 41 		.db   07FH,000H,07FH,041H,05DH,049H,07FH,000H
+2311   1FA6 5D 49 7F 00 
+2312   1FAA 17 08 34 22 		.db   017H,008H,034H,022H,071H,000H,055H,03FH
+2312   1FAE 71 00 55 3F 
+2313   1FB2 10 68 44 E2 		.db   010H,068H,044H,0E2H,017H,008H,004H,06AH
+2313   1FB6 17 08 04 6A 
+2314   1FBA 59 00 06 09 		.db   059H,000H,006H,009H,07FH,001H,07FH,001H
+2314   1FBE 7F 01 7F 01 
+2315   1FC2 29 2A 7C 2A 		.db   029H,02AH,07CH,02AH,029H,000H,070H,029H
+2315   1FC6 29 00 70 29 
+2316   1FCA 24 29 70 00 		.db   024H,029H,070H,000H,038H,045H,044H,045H
+2316   1FCE 38 45 44 45 
+2317   1FD2 38 00 3C 41 		.db   038H,000H,03CH,041H,040H,041H,03CH,000H
+2317   1FD6 40 41 3C 00 
+2318   1FDA 1C 22 7F 22 		.db   01CH,022H,07FH,022H,014H,000H,008H,004H
+2318   1FDE 14 00 08 04 
+2319   1FE2 04 08 04 00 		.db   004H,008H,004H,000H,020H,055H,054H,055H
+2319   1FE6 20 55 54 55 
+2320   1FEA 78 00 30 4A 		.db   078H,000H,030H,04AH,048H,04AH,030H,000H
+2320   1FEE 48 4A 30 00 
+2321   1FF2 3C 41 40 21 		.db   03CH,041H,040H,021H,07CH,000H,040H,07FH
+2321   1FF6 7C 00 40 7F 
+2322   1FFA 49 49 3E 00 		.db   049H,049H,03EH,000H,071H,011H,067H,011H
+2322   1FFE 71 11 67 11 
+2323   2002 71 00 38 54 		.db   071H,000H,038H,054H,056H,055H,018H,000H
+2323   2006 56 55 18 00 
+2324   200A 3C 41 42 20 		.db   03CH,041H,042H,020H,07CH,000H,038H,055H
+2324   200E 7C 00 38 55 
+2325   2012 56 54 18 00 		.db   056H,054H,018H,000H,000H,004H,000H,004H
+2325   2016 00 04 00 04 
+2326   201A 00 00 48 7E 		.db   000H,000H,048H,07EH,049H,001H,002H,000H
+2326   201E 49 01 02 00 
+2327   2022 40 AA A9 AA 		.db   040H,0AAH,0A9H,0AAH,0F0H,000H,070H,0AAH
+2327   2026 F0 00 70 AA 
+2328   202A A9 AA 30 00 		.db   0A9H,0AAH,030H,000H,000H,002H,0E9H,002H
+2328   202E 00 02 E9 02 
+2329   2032 00 00 30 4A 		.db   000H,000H,030H,04AH,49H,04AH,030H,000H
+2329   2036 49 4A 30 00 
+2330   203A 38 42 41 22 		.db   038H,042H,041H,022H,078H,000H,008H,004H
+2330   203E 78 00 08 04 
+2331   2042 02 04 08 00 		.db   002H,004H,008H,000H,038H,055H,054H,055H
+2331   2046 38 55 54 55 
+2332   204A 18 00 00 02 		.db   018H,000H,000H,002H,068H,002H,000H,000H
+2332   204E 68 02 00 00 
+2333   2052 20 54 56 55 		.db   020H,054H,056H,055H,07CH,000H,000H,000H
+2333   2056 7C 00 00 00 
+2334   205A 6A 01 00 00 		.db   06AH,001H,000H,000H,030H,048H,04AH,049H
+2334   205E 30 48 4A 49 
+2335   2062 30 00 3C 40 		.db   030H,000H,03CH,040H,042H,021H,07CH,000H
+2335   2066 42 21 7C 00 
+2336   206A 0C 50 52 51 		.db   00CH,050H,052H,051H,03CH,000H,07AH,011H
+2336   206E 3C 00 7A 11 
+2337   2072 09 0A 71 00 		.db   009H,00AH,071H,000H,042H,0A9H,0A9H,0AAH
+2337   2076 42 A9 A9 AA 
+2338   207A F1 00 32 49 		.db   0F1H,000H,032H,049H,049H,04AH,031H,000H
+2338   207E 49 4A 31 00 
+2339   2082 E0 52 49 52 		.db   0E0H,052H,049H,052H,0E0H,000H,0F8H,0AAH
+2339   2086 E0 00 F8 AA 
+2340   208A A9 AA 88 00 		.db   0A9H,0AAH,088H,000H,000H,08AH,0F9H,08AH
+2340   208E 00 8A F9 8A 
+2341   2092 00 00 70 8A 		.db   000H,000H,070H,08AH,089H,08AH,070H,000H
+2341   2096 89 8A 70 00 
+2342   209A 78 82 81 82 		.db   078H,082H,081H,082H,078H,000H,000H,045H
+2342   209E 78 00 00 45 
+2343   20A2 7C 45 00 00 		.db   07CH,045H,000H,000H,07CH,055H,054H,055H
+2343   20A6 7C 55 54 55 
+2344   20AA 44 00 7C 54 		.db   044H,000H,07CH,054H,056H,055H,044H,000H
+2344   20AE 56 55 44 00 
+2345   20B2 E0 50 4A 51 		.db   0E0H,050H,04AH,051H,0E0H,000H,000H,088H
+2345   20B6 E0 00 00 88 
+2346   20BA FA 89 00 00 		.db   0FAH,089H,000H,000H,070H,088H,08AH,089H
+2346   20BE 70 88 8A 89 
+2347   20C2 70 00 3C 40 		.db   070H,000H,03CH,040H,042H,041H,03CH,000H
+2347   20C6 42 41 3C 00 
+2348   20CA 0C 10 62 11 		.db   00CH,010H,062H,011H,00CH,000H,03CH,041H
+2348   20CE 0C 00 3C 41 
+2349   20D2 42 40 3C 00 		.db   042H,040H,03CH,000H,07CH,055H,056H,054H
+2349   20D6 7C 55 56 54 
+2350   20DA 44 00 E0 51 		.db   044H,000H,0E0H,051H,04AH,050H,0E0H,000H
+2350   20DE 4A 50 E0 00 
+2351   20E2 00 00 00 00 		.db   000H,000H,000H,000H,000H,000H,00FH,00FH
+2351   20E6 00 00 0F 0F 
+2352   20EA 0F 00 00 00 		.db   00FH,000H,000H,000H,000H,000H,000H,00FH
+2352   20EE 00 00 00 0F 
+2353   20F2 0F 0F F0 F0 		.db   00FH,00FH,0F0H,0F0H,0F0H,000H,000H,000H
+2353   20F6 F0 00 00 00 
+2354   20FA 00 00 00 F0 		.db   000H,000H,000H,0F0H,0F0H,0F0H,00FH,00FH
+2354   20FE F0 F0 0F 0F 
+2355   2102 0F F0 F0 F0 		.db   00FH,0F0H,0F0H,0F0H,0F0H,0F0H,0F0H,00FH
+2355   2106 F0 F0 F0 0F 
+2356   210A 0F 0F 0F 0F 		.db   00FH,00FH,00FH,00FH,00FH,00FH,00FH,00FH
+2356   210E 0F 0F 0F 0F 
+2357   2112 F0 F0 F0 F0 		.db   0F0H,0F0H,0F0H,0F0H,0F0H,0F0H,0FFH,0FFH
+2357   2116 F0 F0 FF FF 
+2358   211A FF 00 00 00 		.db   0FFH,000H,000H,000H,000H,000H,000H,0FFH
+2358   211E 00 00 00 FF 
+2359   2122 FF FF FF FF 		.db   0FFH,0FFH,0FFH,0FFH,0FFH,00FH,00FH,00FH
+2359   2126 FF 0F 0F 0F 
+2360   212A 0F 0F 0F FF 		.db   00FH,00FH,00FH,0FFH,0FFH,0FFH,0FFH,0FFH
+2360   212E FF FF FF FF 
+2361   2132 FF F0 F0 F0 		.db   0FFH,0F0H,0F0H,0F0H,0F0H,0F0H,0F0H,0FFH
+2361   2136 F0 F0 F0 FF 
+2362   213A FF FF FF FF 		.db   0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH,0FFH
+2362   213E FF FF FF FF 
+2363   2142 00 00 F8 08 		.db   000H,000H,0F8H,008H,008H,008H,008H,008H
+2363   2146 08 08 08 08 
+2364   214A 08 08 08 08 		.db   008H,008H,008H,008H,008H,008H,0F8H,000H
+2364   214E 08 08 F8 00 
+2365   2152 00 00 08 08 		.db   000H,000H,008H,008H,0F8H,008H,008H,008H
+2365   2156 F8 08 08 08 
+2366   215A 00 00 FF 08 		.db   000H,000H,0FFH,008H,008H,008H,000H,000H
+2366   215E 08 08 00 00 
+2367   2162 FF 00 00 00 		.db   0FFH,000H,000H,000H,000H,000H,00FH,008H
+2367   2166 00 00 0F 08 
+2368   216A 08 08 08 08 		.db   008H,008H,008H,008H,00FH,000H,000H,000H
+2368   216E 0F 00 00 00 
+2369   2172 08 08 0F 08 		.db   008H,008H,00FH,008H,008H,008H,008H,008H
+2369   2176 08 08 08 08 
+2370   217A FF 00 00 00 		.db   0FFH,000H,000H,000H,008H,008H,0FFH,008H
+2370   217E 08 08 FF 08 
+2371   2182 08 08 3F 1F 		.db   008H,008H,03FH,01FH,00FH,007H,003H,001H
+2371   2186 0F 07 03 01 
+2372   218A 80 C0 E0 F0 		.db   080H,0C0H,0E0H,0F0H,0F8H,0FCH,001H,003H
+2372   218E F8 FC 01 03 
+2373   2192 07 0F 1F 3F 		.db   007H,00FH,01FH,03FH,0FCH,0F8H,0F0H,0E0H
+2373   2196 FC F8 F0 E0 
+2374   219A C0 80 55 AA 		.db   0C0H,080H,055H,0AAH,055H,0AAH,055H,0AAH
+2374   219E 55 AA 55 AA 
+2375   21A2             
+2376   21A2             ; ======================================================
+2377   21A2             ; Keyboard conversion matrix
+2378   21A2             ; ======================================================
+2379   21A2             kbdbascii:  ;7BF1H
+2380   21A2 7A 78 63 76 		.text "zxcvbnml"
+2380   21A6 62 6E 6D 6C 
+2381   21AA 61 73 64 66 		.text "asdfghjk"
+2381   21AE 67 68 6A 6B 
+2382   21B2 71 77 65 72 		.text "qwertyui"
+2382   21B6 74 79 75 69 
+2383   21BA 6F 70 5B 3B 		.text "op[;',./"
+2383   21BE 27 2C 2E 2F 
+2384   21C2 31 32 33 34 		.text "12345678"
+2384   21C6 35 36 37 38 
+2385   21CA 39 30 2D 3D 		.text "90-="
+2386   21CE             ;		.db   07AH,078H,063H,076H,062H,06EH,06DH,06CH
+2387   21CE             ;		.db   061H,073H,064H,066H,067H,068H,06AH,06BH
+2388   21CE             ;		.db   071H,077H,065H,072H,074H,079H,075H,069H
+2389   21CE             ;		.db   06FH,070H,05BH,03BH,027H,02CH,02EH,02FH
+2390   21CE             ;		.db   031H,032H,033H,034H,035H,036H,037H,038H
+2391   21CE             ;		.db   039H,030H,02DH,03DH
+2392   21CE             		
+2393   21CE             ; Shifted ASCII values
+2394   21CE             kbdasciishifted:  ;7C1DH
+2395   21CE 5A 58 43 56 		.text "ZXCVBNML"
+2395   21D2 42 4E 4D 4C 
+2396   21D6 41 53 44 46 		.text "ASDFGHJK"
+2396   21DA 47 48 4A 4B 
+2397   21DE 51 57 45 52 		.text "QWERTYUI"
+2397   21E2 54 59 55 49 
+2398   21E6 4F 50 5D 3A 		.text "OP]:\"<>?"
+2398   21EA 22 3C 3E 3F 
+2399   21EE 21 40 23 24 		.text "!@#$%^&*"
+2399   21F2 25 5E 26 2A 
+2400   21F6 28 29 5F 2B 		.text "()_+"		
+2401   21FA             ;		.db   05AH,058H,043H,056H
+2402   21FA             ;		.db   042H,04EH,04DH,04CH,041H,053H,044H,046H
+2403   21FA             ;		.db   047H,048H,04AH,04BH,051H,057H,045H,052H
+2404   21FA             ;		.db   054H,059H,055H,049H,04FH,050H,05DH,03AH
+2405   21FA             ;		.db   022H,03CH,03EH,03FH,021H,040H,023H,024H
+2406   21FA             ;		.db   025H,05EH,026H,02AH,028H,029H,05FH,02BH
+2407   21FA             
+2408   21FA             ; GRPH values
+2409   21FA             kbdgraph: 	;7C49H
+2410   21FA 00 83 84 00 		.db   000H,083H,084H,000H,095H,096H,081H,09AH
+2410   21FE 95 96 81 9A 
+2411   2202 85 8B 00 82 		.db   085H,08BH,000H,082H,000H,086H,000H,09BH
+2411   2206 00 86 00 9B 
+2412   220A 93 94 8F 89 		.db   093H,094H,08FH,089H,087H,090H,091H,08EH
+2412   220E 87 90 91 8E 
+2413   2212 98 80 60 92 		.db   098H,080H,060H,092H,08CH,099H,097H,08AH
+2413   2216 8C 99 97 8A 
+2414   221A 88 9C 9D 9E 		.db   088H,09CH,09DH,09EH,09FH,0B4H,0B0H,0A3H
+2414   221E 9F B4 B0 A3 
+2415   2222 7B 7D 5C 8D 		.db   07BH,07DH,05CH,08DH
+2416   2226             		
+2417   2226             ; Shift GRPH values
+2418   2226             kbdgraphshifted: ;7C75H
+2419   2226 E0 EF FF 00 		.db   0E0H,0EFH,0FFH,000H
+2420   222A 00 00 F6 F9 		.db   000H,000H,0F6H,0F9H,0EBH,0ECH,0EDH,0EEH
+2420   222E EB EC ED EE 
+2421   2232 FD FB F4 FA 		.db   0FDH,0FBH,0F4H,0FAH,0E7H,0E8H,0E9H,0EAH
+2421   2236 E7 E8 E9 EA 
+2422   223A FC FE F0 F3 		.db   0FCH,0FEH,0F0H,0F3H,0F2H,0F1H,07EH,0F5H
+2422   223E F2 F1 7E F5 
+2423   2242 00 F8 F7 00 		.db   000H,0F8H,0F7H,000H,0E1H,0E2H,0E3H,0E4H
+2423   2246 E1 E2 E3 E4 
+2424   224A E5 E6 00 00 		.db   0E5H,0E6H,000H,000H,000H,000H,07CH,000H
+2424   224E 00 00 7C 00 
+2425   2252             		
+2426   2252             ; CODE values
+2427   2252             kbdcode:  ;7CA1H
+2428   2252 CE A1 A2 BD 		.db   0CEH,0A1H,0A2H,0BDH,000H,0CDH,000H,0CAH
+2428   2256 00 CD 00 CA 
+2429   225A B6 A9 BB 00 		.db   0B6H,0A9H,0BBH,000H,000H,000H,0CBH,0C9H
+2429   225E 00 00 CB C9 
+2430   2262 C8 00 C6 00 		.db   0C8H,000H,0C6H,000H,000H,0CCH,0B8H,0C7H
+2430   2266 00 CC B8 C7 
+2431   226A B7 AC B5 AD 		.db   0B7H,0ACH,0B5H,0ADH,0A0H,0BCH,0CFH,0AEH
+2431   226E A0 BC CF AE 
+2432   2272 C0 00 C1 00 		.db   0C0H,000H,0C1H,000H,000H,000H,0C4H,0C2H
+2432   2276 00 00 C4 C2 
+2433   227A C3 AF C5 BE 		.db   0C3H,0AFH,0C5H,0BEH
+2434   227E             
+2435   227E             ; Shift CODE values
+2436   227E             kbdcodeshifted: ;7CCDH
+2437   227E 00 DF AB DE 		.db   000H,0DFH,0ABH,0DEH
+2438   2282 00 00 A5 DA 		.db   000H,000H,0A5H,0DAH,0B1H,0B9H,0D7H,0BFH
+2438   2286 B1 B9 D7 BF 
+2439   228A 00 00 DB D9 		.db   000H,000H,0DBH,0D9H,0D8H,000H,0D6H,0AAH
+2439   228E D8 00 D6 AA 
+2440   2292 BA DC B3 D5 		.db   0BAH,0DCH,0B3H,0D5H,0B2H,000H,000H,000H
+2440   2296 B2 00 00 00 
+2441   229A A4 DD 00 00 		.db   0A4H,0DDH,000H,000H,0D0H,000H,0D1H,000H
+2441   229E D0 00 D1 00 
+2442   22A2 00 00 D4 D2 		.db   000H,000H,0D4H,0D2H,0D3H,0A6H,0A7H,0A8H
+2442   22A6 D3 A6 A7 A8 
+2443   22AA             
+2444   22AA             ; NUM LOCK values
+2445   22AA             kbdnum: ;7CF9H
+2446   22AA 6D 30 6A 31 		.db   06DH,030H,06AH,031H,06BH,032H,06CH,033H
+2446   22AE 6B 32 6C 33 
+2447   22B2 75 34 69 35 		.db   075H,034H,069H,035H,06FH,036H
+2447   22B6 6F 36 
+2448   22B8             
+2449   22B8             ; Special Key values (arrow, TAB, fKeys, etc.)
+2450   22B8             kbdspecial: ;7D07H
+2451   22B8 01 06       		.db   001H,006H
+2452   22BA 14 02 20 7F 		.db   014H,002H,020H,07FH,009H,01BH,08BH,088H
+2452   22BE 09 1B 8B 88 
+2453   22C2 8A 0D 80 81 		.db   08AH,00DH,080H,081H,082H,083H,084H,085H
+2453   22C6 82 83 84 85 
+2454   22CA 86 87       		.db   086H,087H
+2455   22CC             		
+2456   22CC             ; Shift special key values
+2457   22CC             kbdspecialshift: ;7D18H
+2458   22CC 1D 1C 1E 1F 		.db   01DH,01CH,01EH,01FH,020H,008H
+2458   22D0 20 08 
+2459   22D2 09 1B 8B 88 		.db   009H,01BH,08BH,088H,089H,00DH,080H,081H
+2459   22D6 89 0D 80 81 
+2460   22DA 82 83 84 85 		.db   082H,083H,084H,085H,086H,087H,051H,052H
+2460   22DE 86 87 51 52 
+2461   22E2 57 5A       		.db   057H,05AH	
+2462   22E4             
+2463   22E4              .end
+2464   22E4             ; ======================================================
+2465   22E4             ; External ROM detect image loaded at F605H
+2466   22E4             ; ======================================================
+2467   22E4             ;036FH  DB   3EH,01H,D3H,E8H,21H,40H,00H,11H  ; F605H - MVI A,01H;  OUT E8H; LXI H,0040H;  LXI D,FAA4H
+2468   22E4             ;0377H  DB   A4H,FAH,7EH,12H,23H,13H,7DH,D6H  ; F60DH - MVI A,M;    STAX D;  INX H; INX D; MOV A,L; SUI 48H
+2469   22E4             ;037FH  DB   48H,C2H,0FH,F6H,D3H,E8H,2AH,A4H  ; F515H - JNZ F60FH;  OUT E8H; LHLD FAA4H;   
+2470   22E4             ;0387H  DB   FAH,11H,54H,43H,C3H,18H,00H,F3H  ; F61DH - LXI D,4354H; JMP 0018H;     DI;
+2471   22E4             ;038FH  DB   3EH,01H,D3H,E8H,C7H,00H,01H,00H  ; F625H - MVI A,01H;  OUT E8H; RST 0
+2472   22E4             
+2473   22E4             ; ======================================================
+2474   22E4             ; RAM3 OPTROM Test Code 
+2475   22E4             ; ======================================================
+2476   22E4             optram3load:
+2477   22E4 3E 09       	.db 03EH,009H       ;MVI A,01H
+2478   22E6 D3 E8       	.db 0D3H,0E8H       ;OUT E8H
+2479   22E8 21 40 00    	.db 021H,040H,000H  ;LXI H,0040H
+2480   22EB 11 17 91    	.db 011H,017H,091H  ;LXI D,optram3open ; FAA4H       
+2481   22EE 7E          	.db 07EH            ;MOV A,M
+2482   22EF 12          	.db 012H            ;STAX D
+2483   22F0 23          	.db 023H            ;INX H
+2484   22F1 13          	.db 013H       	    ;INX D
+2485   22F2 7D          	.db 07DH            ;MOV A,L
+2486   22F3 D6 48       	.db 0D6H,48H        ;SUI 48H
+2487   22F5 C2 0A 91    	.db 0C2H,00AH,091H  ;JNZ optram3loop
+2488   22F8 D3 E8               .db 0D3H,0E8H       ;OUT E8H
+2489   22FA C9          	.db 0C9H	    ;RET
+2490   22FB             
+2491   22FB             ; ======================================================
+2492   22FB             ; RAM2 OPTROM Test Code 
+2493   22FB             ; ======================================================
+2494   22FB             optram2load:
+2495   22FB 3E 09       	.db 03EH,009H       ;MVI A,01H
+2496   22FD D3 E8       	.db 0D3H,0E8H       ;OUT E8H
+2497   22FF 21 40 00    	.db 021H,040H,000H  ;LXI H,0040H
+2498   2302 11 17 B1    	.db 011H,017H,0B1H  ;LXI D,optram2open ; FAA4H       
+2499   2305 7E          	.db 07EH            ;MOV A,M
+2500   2306 12          	.db 012H            ;STAX D
+2501   2307 23          	.db 023H            ;INX H
+2502   2308 13          	.db 013H       	    ;INX D
+2503   2309 7D          	.db 07DH            ;MOV A,L
+2504   230A D6 48       	.db 0D6H,48H        ;SUI 48H
+2505   230C C2 0A B1    	.db 0C2H,0AH,0B1H   ;JNZ optram2loop
+2506   230F D3 E8           	.db 0D3H,0E8H       ;OUT E8H
+2507   2311 C9          	.db 0C9H	    ;RET
+2508   2312             
+2509   2312             ; ======================================================
+2510   2312             ; RAM1 OPTROM Test Code 
+2511   2312             ; ======================================================
+2512   2312             optram1load:
+2513   2312 3E 09       	.db 03EH,009H       ;MVI A,01H
+2514   2314 D3 E8       	.db 0D3H,0E8H       ;OUT E8H
+2515   2316 21 40 00    	.db 021H,040H,000H  ;LXI H,0040H
+2516   2319 11 17 D1    	.db 011H,017H,0D1H  ;LXI D,optram1open ; FAA4H       
+2517   231C 7E          	.db 07EH            ;MOV A,M
+2518   231D 12          	.db 012H            ;STAX D
+2519   231E 23          	.db 023H            ;INX H
+2520   231F 13          	.db 013H       		;INX D
+2521   2320 7D          	.db 07DH            ;MOV A,L
+2522   2321 D6 48       	.db 0D6H,48H        ;SUI 48H
+2523   2323 C2 0A D1    	.db 0C2H,0AH,0D1H   ;JNZ optram1loop
+2524   2326 D3 E8           .db 0D3H,0E8H       ;OUT E8H
+2525   2328 C9          	.db 0C9H	    ;RET
+2526   2329             :
+2527   2329             
+2528   2329             ; ======================================================
+2529   2329             ; RAM0 OPTROM Test Code 
+2530   2329             ; ======================================================
+2531   2329             optram0load:
+2532   2329 3E 09       	.db 03EH,09H        ;MVI A,01H
+2533   232B D3 E8       	.db 0D3H,0E8H       ;OUT E8H
+2534   232D 21 40 00    	.db 021H,040H,000H  ;LXI H,0040H
+2535   2330 11 17 F1    	.db 011H,017H,0F1H  ;LXI D,optram0open ; FAA4H       
+2536   2333 7E          	.db 07EH            ;MOV A,M
+2537   2334 12          	.db 012H            ;STAX D
+2538   2335 23          	.db 023H            ;INX H
+2539   2336 13          	.db 013H       		;INX D
+2540   2337 7D          	.db 07DH            ;MOV A,L
+2541   2338 D6 48       	.db 0D6H,48H        ;SUI 48H
+2542   233A C2 0A F1    	.db 0C2H,0AH,0F1H  ;JNZ optram0loop
+2543   233D D3 E8           .db 0D3H,0E8H       ;OUT E8H
+2544   233F C9          	.db 0C9H            ;RET
+2545   2340             
+2546   2340             ; ======================================================
+2547   2340             ; The code below will appear in RAM it is here to generate
+2548   2340             ; the HEX code for the ROM to load into RAM when running. 
+2549   2340             ; ======================================================		
+2550   2340             ; ======================================================
+2551   2340             ; RAM3 OPTROM Test Code 
+2552   2340             ; ======================================================		
+2553   9100             		.org ram3+1100H
+2554   9100             optram3:
+2555   9100 3E 09       		MVI A,09H;  
+2556   9102 D3 E8       		OUT 0E8H; 
+2557   9104 21 40 00    		LXI H,0040H;  
+2558   9107 11 17 91    		LXI D,optram3open ; FAA4H
+2559   910A             optram3loop:		
+2560   910A 7E          		MOV A,M;   
+2561   910B 12          		STAX D;  
+2562   910C 23          		INX H; 
+2563   910D 13          		INX D; 
+2564   910E 7D          		MOV A,L; 
+2565   910F D6 48       		SUI 48H
+2566   9111 C2 0A 91    		JNZ optram3loop   ; F60FH;  
+2567   9114 D3 E8       		OUT 0E8H; 
+2568   9116 C9          		RET
+2569   9117             optram3open:
+2570   9117 00 00 00 00 		.db 000H,000H,000H,000H,000H,000H,000H,000H
+2570   911B 00 00 00 00 
+2571   911F             
+2572   911F             ; ======================================================
+2573   911F             ; RAM2 OPTROM Test Code 
+2574   911F             ; ======================================================
+2575   B100             		.org ram2+1100H
+2576   B100             optram2:
+2577   B100 3E 09       		MVI A,09H;  
+2578   B102 D3 E8       		OUT 0E8H; 
+2579   B104 21 40 00    		LXI H,0040H;  
+2580   B107 11 17 B1    		LXI D,optram2open ; FAA4H
+2581   B10A             optram2loop:		
+2582   B10A 7E          		MOV A,M;   
+2583   B10B 12          		STAX D;  
+2584   B10C 23          		INX H; 
+2585   B10D 13          		INX D; 
+2586   B10E 7D          		MOV A,L; 
+2587   B10F D6 48       		SUI 048H
+2588   B111 C2 0A B1    		JNZ optram2loop   ; F60FH;  
+2589   B114 D3 E8       		OUT 0E8H; 
+2590   B116 C9          		RET
+2591   B117             optram2open:
+2592   B117 00 00 00 00 		.db 000H,000H,000H,000H,000H,000H,000H,000H
+2592   B11B 00 00 00 00 
+2593   B11F             
+2594   B11F             ; ======================================================
+2595   B11F             ; RAM1 OPTROM Test Code 
+2596   B11F             ; ======================================================
+2597   D100             		.org ram1+1100H
+2598   D100             optram1:
+2599   D100 3E 09       		MVI A,09H;  
+2600   D102 D3 E8       		OUT 0E8H; 
+2601   D104 21 40 00    		LXI H,0040H;  
+2602   D107 11 17 D1    		LXI D,optram1open ; FAA4H
+2603   D10A             optram1loop:		
+2604   D10A 7E          		MOV A,M;   
+2605   D10B 12          		STAX D;  
+2606   D10C 23          		INX H; 
+2607   D10D 13          		INX D; 
+2608   D10E 7D          		MOV A,L; 
+2609   D10F D6 48       		SUI 048H
+2610   D111 C2 0A D1    		JNZ optram1loop   ; F60FH;  
+2611   D114 D3 E8       		OUT 0E8H; 
+2612   D116 C9          		RET
+2613   D117             optram1open:
+2614   D117 00 00 00 00 		.db 000H,000H,000H,000H,000H,000H,000H,000H
+2614   D11B 00 00 00 00 
+2615   D11F             
+2616   D11F             ; ======================================================
+2617   D11F             ; RAM0 OPTROM Test Code 
+2618   D11F             ; ======================================================
+2619   F100             		.org ram0+1100H
+2620   F100             optram0:
+2621   F100 3E 09       		MVI A,09H;  
+2622   F102 D3 E8       		OUT 0E8H; 
+2623   F104 21 40 00    		LXI H,0040H;  
+2624   F107 11 17 F1    		LXI D,optram0open ; FAA4H
+2625   F10A             optram0loop:		
+2626   F10A 7E          		MOV A,M;   
+2627   F10B 12          		STAX D;  
+2628   F10C 23          		INX H; 
+2629   F10D 13          		INX D; 
+2630   F10E 7D          		MOV A,L; 
+2631   F10F D6 48       		SUI 048H
+2632   F111 C2 0A F1    		JNZ optram0loop   ; F60FH;  
+2633   F114 D3 E8       		OUT 0E8H; 
+2634   F116 C9          		RET
+2635   F117             optram0open:
+2636   F117 00 00 00 00 		.db 000H,000H,000H,000H,000H,000H,000H,000H2636   F11B 00 00 00 00 
+tasm: Number of errors = 0
