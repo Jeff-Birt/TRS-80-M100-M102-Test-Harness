@@ -10,4 +10,6 @@ Test_Firmware - Various versions of available test firmware
 
 Test_Harness_Doc_V10.pdf - Version 1.0 of documentation
 Test_Harness_Doc_V32.pdf - Version 3.2 of documentation
+Test_Harness_Doc_V33.pdf - Version 3.3 of documentation
+Test_Harness_Doc_V40.pdf - Version 4.0 of documentation
 Troubleshooting_Tips.pdf - Random notes from emails with test harness creator.

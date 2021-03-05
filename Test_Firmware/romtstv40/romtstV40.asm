@@ -18,10 +18,11 @@
 ;			              Loopback board tests.
 ;			22 Dec 2020 - V3.2. Improved fault detection on A14-A8 
 ;						  RAM addresses.  
-;			10 Dec 2020 - V3.3. Added OPTROM/Test ROM Checksum
+;			15 Feb 2021 - V3.3. Added OPTROM/Test ROM Checksum
 ;                         Fixed a couple of bugs
 ;                         Added code to dump an OPTROM contents
 ;                         to serial port.  Use only on working boards
+;			 1 Mar 2021 - V4.0. Added Serial Log Output.
 ;
 ;  Copyright © 2020-21 Stardust. 
 ;  All rights reserved.
@@ -30,7 +31,7 @@
 ; TASM 
 ; Processor: 8080/8085
 ;
-#DEFINE VERSION .text "V3.3" ; Change this value to update version
+#DEFINE VERSION .text "V4.0" ; Change this value to update version
 ;#DEFINE ROMDUMP   ;uncomment to dump the OPTROM to Serial port
 ;===========================================================
 ; Defined locations and constants
@@ -132,12 +133,12 @@ copynotice:
 		.text "  ROM Test "
 		VERSION
 		.db 0
-		.text "(c) IS  Feb 2021"
+		.text "(c) IS  Mar 2021"
 		.db 0
 		.text "M100/102 ROM Test "
 		VERSION
 		.db 0
-		.text "Copyright IS Feb 2021"
+		.text "Copyright IS Mar 2021"
 		.db 0
 		
 ; **********************************************************
@@ -170,13 +171,13 @@ wait1:
 		MVI A,0FFH     ; PIO A configuration (Used for Key scan, LCD data, etc.)
 		OUT PIOA       ; Initialize PIO chip port A
 
-		MVI B, 3      ; Wake UP LCD 3 times	
+		MVI B, 3      ; Wake UP Diagnostic LCD 3 times	
 
 ; ==========================================================
-; Configure the diagnostic screen
+; Configure the diagnostic LCD
 ; 	Assumes no RAM is available until tested
 ; ==========================================================
-		; INIT diagnostic screen
+		; INIT diagnostic LDC
 		LXI H,lcdins  ; Load diagnostic LCD Instruction location
 
 lcdwakeup:
@@ -247,7 +248,7 @@ delay5a:
 		JNZ delay5a    ; Loop until C = 0: 7 = 11 = 4.45us
 		
 		LXI H,lcddata  ; Load LCD Data location
-		MVI M,'C'      ; Load C to screen
+		MVI M,'C'      ; Load C to diagnostic LCD screen
 		
 		; Wait 40us		
 		MVI C,10      ; Counter 10 	
@@ -330,10 +331,10 @@ delay13:
 ; RAM TESTS
 ; 	Check each RAM bank
 ; 	Indicate which banks are present
-; 	Test banks that exist by writing each byte.
+; 	Test banks that exist by writing to each byte.
 ; 	Indicate any failures
-; 	Once tested use the stack as part of the testing 
-;	if required
+; 	Once tested use the stack as part of further testing 
+;	if required.
 ; **********************************************************
 ; Used in settings for the RAM tests
 goodmemch	.equ 'm' ; LC to make it more obvious
@@ -553,7 +554,6 @@ ramloop3testfail:
 
 ramloop3testend:
 		STA lcddata
-
 
 		; Wait 40us				
 		MVI C,10        ; Counter 10 	
@@ -1137,11 +1137,11 @@ delayr0:
 ;  The Address lines A10-A8 are directly attached to the chip
 ;  and can be identified as to the part they are identified as
 ;  LKJ when failing.  
-;  The Address lines A14-A11 are  indirectly used to access the RAMs 
+;  The Address lines A14-A11 are indirectly used to access the RAMs 
 ;  via decoders.  Consequently if these lines fail they are limited
 ;  to the failed CE.
 ;  The char 'm' is used to indicate a passing block.
-;  The test will stop on the first block to fail in the 2K RAM
+;  The test will stop on the first block to fail in the 2K/8K RAM
 ;  block.
 ; ==============================================================	
 		MVI A,0C0H      ; Set Cursor to bottom LH corner
@@ -1257,44 +1257,112 @@ contloop:
 		JNZ ramloop128
 
 ; ==============================================================				
-; Now pick a RAM module to use for the next set of tests. 
+; Collate the RAM pass/fail data to use later in the RAM LOG 
 ; ==============================================================
 ramcheck:
+		XRA A
+		MOV B,A
 		LXI SP,ram0+1000H - 2 ; Module 0				
 		POP PSW	
 		CPI goodmemch     ; If successful RAM block is OK
-		MVI A,'0'
-		LXI D,optram0load
-		JZ ramfnd
-
+		JNZ chkRAM1
+		MOV A,B
+		ORI 01H
+		MOV B,A		
+				
+chkRAM1:
 		LXI SP,ram1+1000H - 2 ; Module 1				
 		POP PSW			
 		CPI goodmemch     ; If successful RAM block is OK
-		MVI A,'1'
-		LXI D,optram1load
-		JZ ramfnd
-						
+		JNZ chkRAM2
+		MOV A,B
+		ORI 02H
+		MOV B,A
+				
+chkRAM2:
 		LXI SP,ram2+1000H - 2; Module 2				
 		POP PSW			
 		CPI goodmemch     ; If successful RAM block is OK
-		MVI A,'2'
-		LXI D,optram2load
-		JZ ramfnd		
-
+		JNZ chkRAM3
+		MOV A,B
+		ORI 04H
+		MOV B,A
+		
+chkRAM3:
 		LXI SP,ram3+1000H -2 ; Module 3				
 		POP PSW			
 		CPI goodmemch     ; If successful RAM block is OK
-		MVI A,'3'		
+		JNZ chkdone
+		MOV A,B
+		ORI 08H
+		MOV B,A
+
+; ==============================================================				
+; Now pick a RAM module to use for the next set of tests. 
+; ==============================================================		
+chkdone:
+;		MVI B,00001000B ; RAM testing
+		
+;Reg B should contain a bit stream to indicate the failed RAM
+		MOV A,B
+		ANI 01H          ; Check RAM0 
+		JZ RAM1use
+		LXI SP,ram0+1000H; Module 0				
+		LXI H,logbegin0  ; Store the LOG start address
+		SHLD logdatastart+ram0+1000H+2
+		LXI H,logptrstart0 
+		SHLD logmemptr+ram0+1000H+2
+		LXI D,optram0load
+		MVI A,'0'
+		JMP ramfnd
+
+RAM1use:		
+		MOV A,B
+		ANI 02H          ; Check RAM1
+		JZ RAM2use 
+		LXI SP,ram1+1000H; Module 1				
+		LXI H,logbegin1  ; Store the LOG start and begin address
+		SHLD logdatastart+ram1+1000H+2
+		LXI H,logptrstart1
+		SHLD logmemptr+ram1+1000H+2
+		LXI D,optram1load
+		MVI A,'1'	
+		JMP ramfnd
+
+RAM2use:
+		MOV A,B
+		ANI 04H          ; Check RAM2
+		JZ RAM3use 
+		LXI SP,ram2+1000H; Module 2			
+		LXI H,logbegin2  ; Store the LOG start and begin address
+		SHLD logdatastart+ram2+1000H+2
+		LXI H,logptrstart2
+		SHLD logmemptr+ram2+1000H+2
+		LXI D,optram2load
+		MVI A,'2'
+		JMP ramfnd
+
+RAM3use:
+		MOV A,B
+		ANI 08H          ; Check RAM3
+		JZ cpuhlt        ; No useful RAM 
+		LXI SP,ram3+1000H; Module 3				
+		LXI H,logbegin3  ; Store the LOG start and begin address
+		SHLD logdatastart+ram3+1000H+2
+		LXI H,logptrstart3
+		SHLD logmemptr+ram3+1000H+2
 		LXI D,optram3load
-		JZ ramfnd
-
-		JMP cpuhlt      ; No useful RAM
-
+		MVI A,'3'
+		JMP ramfnd
+		
+		
 ; SP is now set up with valid RAM location	
 ramfnd:
+		PUSH B  ; Save the status of the RAM
+		
 		CALL stromlocation ; Temp use this location to store A for later use
 		MOV M,A
-	
+
 ;OPTROM DUMP CODE - DEBUG ROUTINE
 ; Requires operational RAM 0
 #IFDEF ROMDUMP
@@ -1302,13 +1370,18 @@ ramfnd:
 	   CALL dumpromrun
 #ENDIF		
 ;OPTROM DUMP CODE - DEBUG ROUTINE
-		
+	
+	
 ;Insert OPTROM Detect Code into selected RAM Block	
 		LXI H,0
 		DAD SP
-		LXI B,100H
+		MOV A,H
+		ANI 0E0H
+		ORI 010H
+		MOV H,A
 		MVI L,0
-		DAD B           ; HL points to Free RAM
+		LXI B,0100H
+		DAD B
 		XCHG            ; DE = Free RAM, HL = Code to load	
 		MVI B,size      ; Number of bytes to move
 		CALL movemem    ; B bytes to (DE) from (HL)
@@ -1320,6 +1393,7 @@ ramfnd:
 		MVI A,080H     ; Set diag screen cursor to home
 		CALL putins    ; Send to the diag screen			
 
+		
 ; Set the STROM Resgister Location = 0	
 		CALL stromlocation
 		
@@ -1328,17 +1402,87 @@ ramfnd:
 		
 		MVI A,' '
 		CALL putch
-		
+				
 		; Reset location to 0
 		XRA A
 		MOV M,A
 		OUT CtrlReg
-
+		
 ; Set the countdown timer for the RST 7.5 interrupt					
 		CALL getcountdown
 		MVI M,0D7H
-				
-		;JMP lcdtest   ; Next test, used for debugging test code
+
+;*** RAM LOG Creation	
+; Set up RAM log for the failed RAMs		
+		POP B   ; Retrieve the RAM stats
+		MOV A,B	 
+		ANI 01H
+		JNZ RAM1test
+		;Failed RAM 0 -> 20
+		PUSH B
+		CALL readlogstartadd
+		LXI B,20 ; Point to 'PASS' in RAM LOG
+		DAD B  ; Add to the pointer
+		XCHG
+		LXI H,sysfailstr
+		CALL putstrMEM
+		POP B
+		
+RAM1test:
+		MOV A,B
+		ANI 02H
+		JNZ RAM2test
+		;Failed RAM 1 -> 32
+		PUSH B
+		CALL readlogstartadd
+		LXI B,32 ; Point to 'PASS' in RAM LOG
+		DAD B  ; Add to the pointer
+		XCHG
+		LXI H,sysfailstr
+		CALL putstrMEM
+		POP B
+
+RAM2test:
+		MOV A,B
+		ANI 04H
+		JNZ RAM3test
+		;Failed RAM 2 -> 44
+		PUSH B
+		CALL readlogstartadd
+		LXI B,44 ; Point to 'PASS' in RAM LOG
+		DAD B  ; Add to the pointer
+		XCHG
+		LXI H,sysfailstr
+		CALL putstrMEM
+		POP B
+		
+RAM3test:
+		MOV A,B
+		ANI 08H
+		JNZ RAMtestdone
+		;Failed RAM 3 -> 56
+		PUSH B
+		CALL readlogstartadd
+		LXI B,56 ; Point to 'PASS' in RAM LOG
+		DAD B  ; Add to the pointer
+		XCHG
+		LXI H,sysfailstr
+		CALL putstrMEM
+		POP B
+
+;*** RAM LOG Creation
+	
+RAMtestdone:	
+;DEBUG Used to check loading of OPTROM 
+;		CALL initRS ; Init the serial port
+;		CALL ramsblockstart
+;		XCHG
+;		lxi B,1100H
+;		DAD B
+;		MVI B,192
+;		CALL dumpmemRS
+:DEBUG
+		
 		JMP piotest   ; Next test
 
 ; ##########################################################
@@ -2593,6 +2737,8 @@ rst65dtrdone:
 ; ======================================================		
 ; Configure serial port loopback test
 ; ======================================================		
+		CALL clrscreen
+
 		LXI H,loopbackteststr
   		CALL putstr
 
@@ -2601,7 +2747,7 @@ rst65dtrdone:
   				
   		LXI H,loopbackstatstr
   		CALL putstr
-
+		
 		; Reset buffer
 		XRA A
 		CALL rxbuffer  ; Store received character
@@ -2884,6 +3030,7 @@ lpttestdone1:
 ; *********************************************
 lpttestnext:
 ;Check Busy and Busy- lines PC1 Busy- PC2 Busy
+		CALL clrscreen ;Setup the screen for next test
  		MVI A,080H     ; Set Cursor to back to start
 		CALL putins	
 		LXI H,nbusyteststr
@@ -3007,7 +3154,7 @@ lpttestdone:
 		LXI H,passstr
 
 lptprtdone:
-		MVI A,089H     ; Set Cursor to back upper line
+		MVI A,089H     ; Set Cursor to upper line
 		CALL putins	
 		CALL putstr
 
@@ -4191,8 +4338,9 @@ cascharread1: ;7036H
 prtdone:
 		DI
 		CALL buzzer
-		CALL clrscreen  ; Reset the screen for the new test
-		
+;End of test report to user	
+		CALL clrscreen  ; Reset the screen for the new text
+	
 		LXI H,testcompletestr ; 11 chars
 		CALL putstr		
 
@@ -4201,6 +4349,8 @@ prtdone:
 
 		LXI H,versioninfostr
 		CALL putstr
+
+		CALL dumplogRS   ; Dump the RAM Test Log 
 
  		MVI B,10
 prtwait:
@@ -4301,17 +4451,33 @@ trap:
 		ORI 010H        ; Set the PowerDown bit
 		OUT 0BAH        ; PowerDown.  We will loose power here
 		HLT		
-		
+
+; ======================================================
+; Move B bytes from M to (DE)
+; ======================================================
+movemem: ; 2542H
+		MOV A,M
+		STAX D
+		INX H
+		INX D
+		DCR B
+		JNZ movemem	;2542H Move B bytes from M to (DE)
+		RET
+				
 ; **********************************************************
 ; Address calculation routines to deal with unknown RAM Locations
 ; **********************************************************
-countdownmem  .equ 14
-strommem      .equ countdownmem + 4
-rst75testmem  .equ strommem + 4
-rxbuffermem   .equ rst75testmem + 4
-rst55testmem  .equ rxbuffermem + 4
-keyboardmem   .equ rst55testmem + 4
-casstoragemem .equ 12 ; Stored at a different location
+casstoragemem  .equ 12 ; Stored at a different location
+countdownmem   .equ 14
+strommem       .equ countdownmem + 4
+rst75testmem   .equ strommem + 4
+rxbuffermem    .equ rst75testmem + 4
+rst55testmem   .equ rxbuffermem + 4
+keyboardmem    .equ rst55testmem + 4
+logdatastart   .equ keyboardmem + 4 ;Set up the logging area start
+logmemptr      .equ logdatastart + 4
+scrmemptr	   .equ logmemptr + 4
+scrmemstartptr .equ scrmemptr + 4
 
 ; ======================================================
 ; Get Start of RAM block, using current SP, into DE
@@ -4332,7 +4498,8 @@ ramsblockstart:
 
 ; ======================================================
 ; Get Start of SP + 1, into DE
-; Relies on Stack not getting too large and on a 00H boundary
+; Relies on Stack not getting too large and on the 
+; 00H boundary
 ; ======================================================
 stackstart:
 		PUSH H
@@ -4500,19 +4667,169 @@ putcasstorage:
 		MOV M,A
 		POP H
 		RET	
-								
+
 ; ======================================================
-; Move B bytes from M to (DE)
+; Retrieve Log memory start 16bit address
 ; ======================================================
-movemem: ; 2542H
-		MOV A,M
-		STAX D
+readlogstartadd:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI logdatastart; Add logdatastart offset to Stack start
+		MOV L,A         ; HL points to logdatastart
+		MOV E,M
 		INX H
-		INX D
-		DCR B
-		JNZ movemem	;2542H Move B bytes from M to (DE)
+		MOV D,M
+		XCHG            ; HL = Contents of logdatastart
+		POP D
+		POP PSW    
+		RET
+		
+; ======================================================
+; Retrieve Log memory ptr 16bit address
+; ======================================================
+readlogmemptr:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI logmemptr  ; Add logmemptr offset to Stack start
+		MOV L,A         ; HL points to logmemptr
+		MOV E,M
+		INX H
+		MOV D,M
+		XCHG            ; HL = Contents of logmemptr
+		POP D		
+		POP PSW    
 		RET
 
+; ======================================================
+; Retrieve Screen memory start ptr 16bit address
+; ======================================================
+readscrstartptr:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI scrmemstartptr  ; Add scrmemstartptr offset to Stack start
+		MOV L,A         ; HL points to scrmemstartptr
+		MOV E,M
+		INX H
+		MOV D,M
+		XCHG            ; HL = Contents of scrmemstartptr
+		POP D		
+		POP PSW    
+		RET
+		
+; ======================================================
+; Retrieve Screen memory ptr 16bit address
+; ======================================================
+readscrmemptr:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI scrmemptr   ; Add scrmemptr offset to Stack start
+		MOV L,A         ; HL points to scrmemptr
+		MOV E,M
+		INX H
+		MOV D,M
+		XCHG            ; HL = Contents of scrmemptr
+		POP D		
+		POP PSW    
+		RET
+				
+; ======================================================
+; Store Log memory start 16bit address
+;   HL Contains the data to be stored.
+; ======================================================
+savelogstartadd:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI logdatastart; Add logdatastart offset to Stack start
+		MOV L,A         ; HL points to logdatastart
+		MOV M,E
+		INX H
+		MOV M,D
+		POP D
+		POP PSW    
+		RET
+		
+; ======================================================
+; Store Log memory ptr 16bit address
+;   HL Contains the data to be stored.
+; ======================================================
+savelogmemptr:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI logmemptr   ; Add logmemptr offset to Stack start
+		MOV L,A         ; HL points to logmemptr
+		MOV M,E
+		INX H
+		MOV M,D
+		POP D	
+		POP PSW    
+		RET
+	
+; ======================================================
+; Store Screen memory star ptr 16bit address
+;   HL Contains the data to be stored.
+; ======================================================
+savescrstartptr:
+		PUSH PSW
+		PUSH D
+		CALL stackstart    ; DE set to SP
+		XCHG	           ; HL - DE swap, HL = SP
+		MOV A,L            ; 
+		ADI scrmemstartptr ; Add scrmemstartptr offset to Stack start
+		MOV L,A            ; HL points to scrmemstartptr
+		MOV M,E
+		INX H
+		MOV M,D
+		POP D	
+		POP PSW    
+		RET	
+	
+; ======================================================
+; Store Screen memory ptr 16bit address
+;   HL Contains the data to be stored.
+; ======================================================
+savescrmemptr:
+		PUSH PSW
+		PUSH D
+		CALL stackstart ; DE set to SP
+		XCHG	        ; HL - DE swap, HL = SP
+		MOV A,L         ; 
+		ADI scrmemptr   ; Add scrmemptr offset to Stack start
+		MOV L,A         ; HL points to scrmemptr
+		MOV M,E
+		INX H
+		MOV M,D
+		POP D	
+		POP PSW    
+		RET				
+								
+; ======================================================
+; Disable Background task & barcode interrupts
+; ======================================================
+disablebackground: ;765CH
+		DI             ; Disable interrupts
+		MVI A,1DH      ; Load SIM mask to disable RST 5.5 & 7.5
+		SIM            ; Set new interrupt mask (disable Background & barcode)
+		EI             ; Re-enable interrupts
+		RET
+		
 ; **********************************************************
 ; Debug Helper routines
 ; **********************************************************
@@ -4561,16 +4878,60 @@ dumpHL:
 		POP PSW
 		RET
 
+; **********************************************************
+; Diagnostic LCD basic routines
+; **********************************************************
+; ==========================================================
+; Clear Diagnostic LCD Screen
+; ==========================================================
+clrscreen:
+		;LCD CLEAR
+		MVI A,lcdclr   ; LCD Clear
+		STA lcdins
+		
+		; Wait 1.64ms		
+		; Wait 800us
+		MVI B,2
+delayclrs:
+		MVI C,200      ; Counter 190 	
+delayclr:
+		DCR C          ; Decrement C: 4
+		JNZ delayclr    ; Loop until C = 0: 7 = 11 = 4.45us		
+		
+		DCR B
+		JNZ delayclrs	
+
+		MVI A,lcdmode
+		Call putins
+
+; Set up new clear screen in RAM Log
+		CALL readlogmemptr
+		CALL savescrmemptr  ; Update the screen ptr to start of screen
+		CALL readlogmemptr
+		CALL savescrstartptr; Update the screen start ptr
+		LXI H,clrscreenMEM	
+		CALL appendstrMEM   ; Fill Log with blank screen image
+		RET
+		
 ; ==========================================================
 ; PUT Char on Diagnostic LCD. A contains character
 ; ==========================================================
 putch: 
 		PUSH B           ; Save BC
-
+		PUSH H
+		PUSH D
+		
 		STA lcddata    	 ; Send char to LCD		
 		MVI C,16         ; Counter 16 	
 		CALL shortdelay
-		
+
+		CALL readscrmemptr ; Load Mem Screen Ptr
+		MOV M,A
+		INX H
+		CALL savescrmemptr ; Save Mem Screen Ptr
+
+		POP D
+		POP H
 		POP B	
 		RET
 		
@@ -4579,11 +4940,44 @@ putch:
 ; ==========================================================
 putins:
 		PUSH B           ; Save BC
-
+		PUSH H
+		PUSH D
+		
 		STA lcdins    	 ; Send ins to LCD		
 		MVI C,16         ; Counter 16 	
 		CALL shortdelay
-			
+
+; Deal with screen ptr moving 08xH, 0CxH
+		MOV B,A
+		ANI 0F0H
+		CPI 080H     ; Check for top line 
+		JNZ bottomline
+		MOV A,B
+		ANI 00FH
+		LXI B,0
+		MOV C,A
+		CALL readscrstartptr
+		DAD B
+		CALL savescrmemptr
+		JMP putinsend
+		
+bottomline:
+		MOV A,B
+		ANI 0F0H
+		CPI 0C0H     ; Check for bottom line
+		JNZ putinsend
+		MOV A,B
+		ANI 00FH
+		ADI 011H
+		LXI B,0
+		MOV C,A
+		CALL readscrstartptr
+		DAD B
+		CALL savescrmemptr
+
+putinsend:
+		POP D
+		POP H
 		POP B			
 		RET	
 
@@ -4592,20 +4986,34 @@ putins:
 ; ==========================================================
 putstr:
 		PUSH PSW
+		PUSH H
 putsloop:
 		MOV A,M   	     ; H = Current Character
 		CPI 0H           ; Check end of table
-		JZ putstrexit       
-		CALL putch       ; Write to screen
+		JZ putstrexit    
+		 
+		STA lcddata    	 ; Send char to LCD		
+		MVI C,16         ; Counter 16 	
+		CALL shortdelay
+		  
 		INX H            ; Get next Char
 		JMP putsloop
 		
 putstrexit:
+
+; Put same text to memory log
+		CALL readscrmemptr ; Load Mem Screen Ptr
+		XCHG
+		POP H		
+		CALL putstrMEM ; HL=Str, DE=RAM ptr
+		XCHG
+		CALL savescrmemptr ; Save Mem Screen Ptr
+		
 		POP PSW
 		RET
 
 ; ==========================================================
-; Print A as 2 HEX digits
+; Print A as 2 HEX digits to diagnostic Screen
 ; ==========================================================
 hexchar: 
 		.text "0123456789ABCDEF"
@@ -4642,7 +5050,15 @@ prthex:
 		POP H
 		POP PSW
 		RET		
-				
+
+; ==========================================================
+; Diagnostic Screen Text Strings
+; ==========================================================
+#include "DiagStrings.asm"	
+
+; **********************************************************
+; Delays used in timing of tests
+; **********************************************************
 ; ==========================================================
 ; Short delay.  C = loop counter
 ; ==========================================================
@@ -4650,42 +5066,7 @@ shortdelay: ;7657H
 		DCR C           ; Decrement C: 4
 		JNZ shortdelay  ; Loop until C = 0: 7 = 11 = 4.45us
 		RET
-
-; ======================================================
-; Disable Background task & barcode interrupts
-; ======================================================
-disablebackground: ;765CH
-		DI             ; Disable interrupts
-		MVI A,1DH      ; Load SIM mask to disable RST 5.5 & 7.5
-		SIM            ; Set new interrupt mask (disable Background & barcode)
-		EI             ; Re-enable interrupts
-		RET
-
-; ==========================================================
-; Clear Diagnostic LCD Screen
-; ==========================================================
-clrscreen:
-		;LCD CLEAR
-		MVI A,lcdclr   ; LCD Clear
-		STA lcdins
-		
-		; Wait 1.64ms		
-		; Wait 800us
-		MVI B,2
-delayclrs:
-		MVI C,200      ; Counter 190 	
-delayclr:
-		DCR C          ; Decrement C: 4
-		JNZ delayclr    ; Loop until C = 0: 7 = 11 = 4.45us		
-		
-		DCR B
-		JNZ delayclrs	
-
-		MVI A,lcdmode
-		Call putins
-
-		RET
-		
+			
 ; ==========================================================
 ; Wait for 2s	
 ; ==========================================================
@@ -4736,227 +5117,12 @@ waithalflooplong:
 		POP B
 		POP PSW
 		RET
-				
+
+
 ; ==========================================================
-; Diagnostic LCD Strings	
-; ==========================================================
-passstr:		
-		.text " PASS"
-		.db   0
-sysfailstr:
-lcdfailstr:
-piofailstr:	
-clkfailstr:
-testfailstr:
-lptfailstr:
-dongledatafail:
-loopbackfail:
-;		.text "0123456789ABCDEF"
-		.text " FAIL"
-		.db   0
-testdone:	
-		.text " DONE!"
-		.db   0
-ramstr:		
-		.text "PIO "
-		.db   0
-piostr:		
-		.text "PIO "
-		.db   0
-kbdstr:	
-		.text "KBD "
-		.db   0
-lcdstr:	
-		.text "LCD "
-		.db   0
-lcdfound:	
-		.text " FOUND "
-		.db   0		
-lcddone:
-		.text " LCD OK?"
-		.db   0
-clkteststr:
-		.text "CLK IC " 
-		.db 0
-donglestrdata:
-		.text "DNGL-AD7-0 " 
-		.db 0
-donglestrins1:
-		.text "DNGL-C20-27" 
-		.db 0
-donglestrins2:
-		.text "DNGL-C28-29" 
-		.db 0
-dongleins2data:
-		.text "RST X CS28-29 X"
-		.db 0
-donglestrstat:
-		.text "WR XX RD XX     "
-		.db 0
-loopbackstrdata:
-		.text "KEY LOOPED " 
-		.db 0
-loopbackstrstat:
-		.text "WR XX RD XX     "
-		.db 0
-kbdteststr:
-		.text "KEYBOARD " 
-		.db 0
-keypressedstr:
-		.text "KEY: " 
-		.db 0
-kbdtestfailstr:
-		.text "TEST FAILED     " 
-		.db 0
-kbdtestdonestr:
-		.text "TEST COMPLETED  " 
-		.db 0
-rst75teststr:
-		.text "RST 7.5 "
-		.db 0
-sysbusteststr:
-		.text "SYS BUS         "
-		.db 0
-systeststr:
-		.text "WR XX RD XX S xx"
-		.db 0
-rst65teststr:
-		.text "CTRL BITS       "
-		.db 0
-dsrteststr:
-		.text "RT/CT X DS/DT X "
-		.db 0
-loopbackteststr:
-		.text "LOOPBACK TEST   "
-		.db 0
-loopbackstatstr:
-		.text "C xx TX xx RX xx"
-		.db 0		
-loopbackfailstr:
-		.text "LOOPBACK FAIL   "
-		.db 0
-loopbackpassstr:
-		.text "LOOPBACK PASS   "
-		.db 0
-txfailstr: 
-		.text "TX Failed       "
-		.db 0
-rxfailstr: 
-		.text "RX Failed       "
-		.db 0
-lptteststr:
-		.text "LPT I/F "
-		.db 0
-lptloopteststr:
-		.text "WR XX RD XX"
-		.db 0
-nbusyteststr:
-		.text "Busy- ??        "
-		.db 0
-busyteststr:
-		.text "Busy  ??        "
-		.db 0
-rst55teststr:
-		.text "BCR I/F "
-		.db 0
-rst55loopteststr:
-		.text "LP XX CT XX P   "
-		.db 0
-casteststr:
-		.text "CAS REMOTE      "  ; 11
-		.db 0
-castestfailstr:
-		.text "CAS REMOTE FAIL "  ; 11
-		.db 0
-castestpassstr:
-		.text "CAS REMOTE PASS "  ; 11
-		.db 0
-castestaudiostr:
-		.text "CAS AUDIO TEST  "  ; 3
-		.db 0
-castestaudiosyncstr:
-		.text "SYNC PASS:      "  ; 3
-		.db 0
-castestaudiosyncfailstr:
-		.text "SYNC FAIL:      "  ; 3
-		.db 0
-castestaudiodonestr:
-		.text "CAS AUDIO DONE  "  ; 3
-		.db 0
-castestoffstr:
-		.text "CAS REMOTE OFF  "  ; 3
-		.db 0
-castestonstr:
-		.text "CAS REMOTE ON   "  ; 3
-		.db 0
-castestplaystr:
-		.text "PLAY[BLK] ctl-brk"
-		.db 0	
-castestrecstr:
-		.text "REC [GRY] ctl-brk"
-		.db 0
-castestplaystartedstr
-		.text "LISTENING....   "
-		.db 0
-castestrecstartedstr
-		.text "SENDING AUDIO   "
-		.db 0
-stromteststr:
-		.text "SWITCH 2 OPTROM "
-		.db 0
-optromfoundstr:
-		.text "OPTROM SWITCHED "
-		.db 0
-nooptromstr:
-		.text "OPTROM FAILED   "
-		.db 0
-stromfailurestr:
-		.text "NO RAM"
-		.db 0
-ram0used:
-		.text "0"
-		.db 0
-ram1used:
-		.text "1"
-		.db 0
-ram2used:
-		.text "2"
-		.db 0
-ram3used:
-		.text "3"
-		.db 0	
-chksum:
-;		.text "0123456789ABCDEF"
-		.text " xxxx PASS yyyy"
-		.db 0
-optromunknow:
-		.text "UNK?  "
-		.db 0
-idrex:
-		.text "REX   "
-		.db 0
-settingsvalue:
-		.text "SETTINGS:"
-		.db 0
-goodbye:
-		.text "Powering off!   "
-		.db 0	
-testcompletestr:
-		.text "WAIT FOR PWR OFF"
-		.db 0
-versioninfostr:
-		.text "(c)  2/2021 "
-		VERSION
-		.db 0
-;		.text "0123456789ABCDEF"
-dumpromstr:
-		.text "DUMP ROM BEGIN  "
-		.db 0
-dumpromstrend:
-		.text "DUMP ROM END    "
-		.db 0
-; ==========================================================
-; OPTROM IDs
+; OPTROM IDs used when testing OPTROM to determine installed
+; ROM.  Not all ROMs are included and extras can be easily
+; added to the list.  
 ; ==========================================================
 optromidtable:
 	.db 0C0H,000H ; Empty Socket
@@ -4979,6 +5145,9 @@ optromidtable:
 	.db 0	
 endoptromidtable .equ $
 
+; **********************************************************
+;  Serial port routines used to dump Test Log and OPTROMs.
+; **********************************************************
 ; ==========================================================
 ; Init serial port
 ; ==========================================================
@@ -5031,7 +5200,7 @@ putsloopRS:
 putstrRSexit:
 		POP PSW
 		RET
-		
+
 ; ======================================================
 ; Dump memory (HL) size of B to Serial port in Binary
 ; ======================================================
@@ -5050,6 +5219,113 @@ dumploopRS:
 		POP B
 		POP PSW
 		RET
+		
+; **********************************************************
+;  Routines used to create the RAM test log.
+; **********************************************************		
+; ==========================================================
+; Append Char in A to to RAM Test Log
+; ==========================================================
+appendchMEM:
+		PUSH H
+		CALL readlogmemptr     ; Get the END start address
+		MOV A,M
+		INX H
+		CALL savelogmemptr     ; Save the new END start address
+		POP H
+		RET
+		
+; ==========================================================
+; Append String to RAM Test Log,  HL points to string
+; ==========================================================
+appendstrMEM:
+		PUSH PSW
+		PUSH D
+		XCHG                 ; Swap HL & DE
+		CALL readlogmemptr   ; Get the END log address
+		XCHG				 ; Swap HL & DE, HL = String, DE = RAM
+		
+		CALL putstrMEM
+		
+		XCHG 
+		CALL savelogmemptr   ; Save the new END log address
+	
+		POP D
+		POP PSW
+		RET
+				
+; ==========================================================
+; PUT String into RAM Test Log memory file
+;  DE points to RAM file
+;  HL points to String
+; ==========================================================
+putstrMEM:
+		PUSH PSW
+putsloopMEM:
+		MOV A,M   	     ; H = Current Character
+		CPI 0H           ; Check end of table
+		JZ putstrexitMEM       
+		STAX D           ; Write to memory
+		INX H            ; Get next Char
+		INX D            ; Next mem location
+		JMP putsloopMEM
+
+		;Add on LF,CR to end of Strings
+;		MVI A,0AH
+;		STAX D
+;		INX D
+;		MVI A,0DH
+;		STAX D
+;		INX D
+				
+putstrexitMEM:
+		POP PSW
+		RET
+				
+; ======================================================
+; Dump RAM Test log to Serial port
+; ======================================================
+dumplogRS:
+		PUSH PSW
+		PUSH D
+		PUSH H
+		
+		CALL initRS    ; Init RS232 PORT
+
+		; Provide a newline for the Log print out
+		MVI A,0AH
+		CALL putchRS      ; Write to Serial Port
+		MVI A,0DH
+		CALL putchRS      ; Write to Serial Port
+		MVI A,0AH
+		CALL putchRS      ; Write to Serial Port
+		MVI A,0DH
+		CALL putchRS      ; Write to Serial Port
+		
+; Get start address for the RAM log
+		CALL readlogstartadd  ; Get the LOG start address
+		XCHG                  ; Swap HL to DE
+				
+; Get end address for the RAM log
+		CALL readlogmemptr     ; Get the END start address
+				
+dumplogloopRS:
+		LDAX D            ; Get byte from LOG
+		CALL putchRS      ; Write to Serial Port
+		INX D             ; Point to next byte
+		
+		MOV A,L           ; See if the end is reached
+		SUB E
+		JNZ dumplogloopRS 	  ; L = E 	
+		MOV A,H
+		SUB D
+		JNZ dumplogloopRS     ; H = D
+
+		POP H
+		POP D
+		POP PSW
+		RET
+		
 ; ==========================================================
 ; Diagnostic Serial Strings	
 ; ==========================================================		
@@ -5059,7 +5335,17 @@ romdumpstart:
 romdumpend:
 	.text "<\r\n End ROM dump \r\n"
 	.db 0
-;*************************************
+clrscreenMEM:
+	.text "                                 \r\n"
+;	.text "?????????????????????????????????\r\n"
+	.db 0
+	
+;***********************************************************
+; ==========================================================
+; Generate the 16-bit summation of the test ROM
+; Used as part of the OPTROM test routines	
+; ==========================================================		
+
 dumpromtest:
 		LXI H, 0  ; Start of ROM
 dumpromlooptest:
@@ -5448,8 +5734,9 @@ kbdspecialshift: ;7D18H
 		.db   082H,083H,084H,085H,086H,087H,051H,052H
 		.db   057H,05AH	
 
-; ======================================================
+; **********************************************************
 ; External ROM detect image loaded at F605H
+; **********************************************************
 ; ======================================================
 ;036FH  DB   3EH,01H,D3H,E8H,21H,40H,00H,11H  ; F605H - MVI A,01H;  OUT E8H; LXI H,0040H;  LXI D,FAA4H
 ;0377H  DB   A4H,FAH,7EH,12H,23H,13H,7DH,D6H  ; F60DH - MVI A,M;    STAX D;  INX H; INX D; MOV A,L; SUI 48H
@@ -5530,6 +5817,7 @@ optram3load:
 	.db 0C9H            ;RET
 ;rexstore3:
 	.db 00H,00H,00H,00H
+	.text "Test Log Data\r\nRAM 0 PASS\r\nRAM 1 PASS\r\nRAM 2 PASS\r\nRAM 3 PASS\r\n"
 		
 ; ======================================================
 ; RAM2 OPTROM Test Code 
@@ -5604,6 +5892,7 @@ optram2load:
 	.db 0C9H          ;RET
 ;rexstore2:
 	.db 00H,00H,00H,00H
+	.text "Test Log Data\r\nRAM 0 PASS\r\nRAM 1 PASS\r\nRAM 2 PASS\r\nRAM 3 PASS\r\n"
 	
 ; ======================================================
 ; RAM1 OPTROM Test Code 
@@ -5678,6 +5967,7 @@ optram1load:
 	.db 0C9H          ;RET
 ;rexstore1:
 	.db 00H,00H,00H,00H
+	.text "Test Log Data\r\nRAM 0 PASS\r\nRAM 1 PASS\r\nRAM 2 PASS\r\nRAM 3 PASS\r\n"
 	
 ; ======================================================
 ; RAM0 OPTROM Test Code 
@@ -5751,6 +6041,7 @@ optram0load:
 	.db 0C9H          ;RET
 ;rexstore0:
 	.db 00H,00H,00H,00H
+	.text "Test Log Data\r\nRAM 0 PASS\r\nRAM 1 PASS\r\nRAM 2 PASS\r\nRAM 3 PASS\r\n"
 
 ; ======================================================
 ; Activate DUMP OPTROM Debug Code 
@@ -5838,415 +6129,10 @@ dumpromload:
 	.db 0D3H,0C8H        ;OUT UARTsend   ; C8H
 	.db 0C9H             ;RET	
 
-; ======================================================
-; The code below will appear in RAM it is here to generate
-; the HEX code for the ROM to load into RAM when running. 
-; ======================================================		
-; ======================================================
-; RAM3 OPTROM Test Code 
-; ======================================================		
-		.org ram3+1100H
-optram3:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0040H;  
-		LXI D,optram3open ; FAA4H
-optram3loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 48H
-		JNZ optram3loop   ; F60FH; 
-	
-;Calculate Checksum over complete OPTROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram3checksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-        JNZ optram3checksum  ; If ~0 continue 
-		
-        XCHG
-        SHLD checksum3      ; Store the checksum 
-		MVI A,08H
-		OUT 0E8H;  ; Return to main ROM	
-		
-;Calculate Checksum over complete ROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram3tchecksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-        JNZ optram3tchecksum  ; If ~0 continue 			
-		XCHG
-		SHLD checksum3t	
-		RET
-optram3open:
-		.db 000H,000H,000H,000H,000H,000H,000H,000H
-checksum3:
-		.dw 0000H  
-checksum3t:
-		.dw 0000H 
-
-getrex3:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0004H;  
-		LXI D,rexstore3 ;
-getrex3loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 08H
-		JNZ getrex3loop   ;
-		MVI A,09H;  
-		OUT 0E8H; 		
-		RET				
-rexstore3:
-		.db 00H,00H,00H,00H
-		
-; ======================================================
-; RAM2 OPTROM Test Code 
-; ======================================================
-		.org ram2+1100H
-optram2:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0040H;  
-		LXI D,optram2open ; FAA4H
-optram2loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 048H
-		JNZ optram2loop   ; F60FH;  
-		
-;Calculate Checksum over complete OPTROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram2checksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-;		MOV A,L
-;		CPI 0
-        JNZ optram2checksum  ; If ~0 continue 
-		
-        XCHG
-        SHLD checksum1       ; Store the checksum 
-		MVI A,08H
-		OUT 0E8H;  ; Return to main ROM	
-		
-;Calculate Checksum over complete ROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram2tchecksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-;		MOV A,L
-;		CPI 0
-        JNZ optram2tchecksum  ; If ~0 continue 			
-		XCHG
-		SHLD checksum2t
-	
-		RET
-optram2open:
-		.db 000H,000H,000H,000H,000H,000H,000H,000H
-checksum2:
-		.dw 0000H  
-checksum2t:
-		.dw 0000H 
-
-getrex2:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0004H;  
-		LXI D,rexstore2 ;
-getrex2loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 08H
-		JNZ getrex2loop   ;
-		MVI A,09H;  
-		OUT 0E8H; 		
-		RET				
-rexstore2:
-		.db 00H,00H,00H,00H
-		
-; ======================================================
-; RAM1 OPTROM Test Code 
-; ======================================================
-		.org ram1+1100H
-optram1:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0040H;  
-		LXI D,optram1open ; FAA4H
-optram1loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 048H
-		JNZ optram1loop   ; F60FH;
-		
-;Calculate Checksum over complete OPTROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram1checksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-;		MOV A,L
-;		CPI 0
-        JNZ optram0checksum  ; If ~0 continue 
-		
-        XCHG
-        SHLD checksum1       ; Store the checksum 
-		MVI A,08H
-		OUT 0E8H;  ; Return to main ROM	
-		
-;Calculate Checksum over complete ROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram1tchecksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-;		MOV A,L
-;		CPI 0
-        JNZ optram1tchecksum  ; If ~0 continue 			
-		XCHG
-		SHLD checksum1t
-	
-		RET
-optram1open:
-		.db 000H,000H,000H,000H,000H,000H,000H,000H
-checksum1:
-		.dw 0000H  
-checksum1t:
-		.dw 0000H 
-
-getrex1:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0004H;  
-		LXI D,rexstore1 ;
-getrex1loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 08H
-		JNZ getrex1loop   ;
-		MVI A,09H;  
-		OUT 0E8H; 		
-		RET				
-rexstore1:
-		.db 00H,00H,00H,00H
-						
-; ======================================================
-; RAM0 OPTROM Test Code 
-; ======================================================
-		.org ram0+1100H
-optram0:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0040H;  
-		LXI D,optram0open ; FAA4H
-optram0loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 048H
-		JNZ optram0loop   ; F60FH; 
-		
-;Calculate Checksum over complete OPTROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram0checksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-;		MOV A,L
-;		CPI 0
-        JNZ optram0checksum  ; If ~0 continue 
-		
-        XCHG
-        SHLD checksum0       ; Store the checksum 
-		MVI A,08H
-		OUT 0E8H;  ; Return to main ROM	
-		
-;Calculate Checksum over complete ROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-		LXI B, 0  ; Counter
-		LXI D, 0  ; storage
-optram0tchecksum:
-		MOV C,M   ; Get byte
-		XCHG      ; Swap HL and DE
-		DAD B     ; Add to form 16bit sum
-		XCHG      ; Swap HL and DE
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-;		MOV A,L
-;		CPI 0
-        JNZ optram0tchecksum  ; If ~0 continue 			
-		XCHG
-		SHLD checksum0t
-		RET
-optram0open:
-		.db 000H,000H,000H,000H,000H,000H,000H,000H
-checksum0:
-		.dw 0000H  
-checksum0t:
-		.dw 0000H 
-				
-getrex0:
-		MVI A,09H;  
-		OUT 0E8H; 
-		LXI H,0004H;  
-		LXI D,rexstore0 ;
-getrex0loop:		
-		MOV A,M;   
-		STAX D;  
-		INX H; 
-		INX D; 
-		MOV A,L; 
-		SUI 08H
-		JNZ getrex0loop   ;
-		MVI A,09H;  
-		OUT 0E8H; 		
-		RET				
-rexstore0:
-		.db 00H,00H,00H,00H
-size    .equ ((rexstore0 + 1) - optram0) + 3
 
 ; ======================================================
-; Useful to have to dump OPTROMS
+; RAM Code include
 ; ======================================================
-; DUMP OPTROM Test Code 
-; ======================================================
-; ======================================================
-		.org ram0+1200H
-dumprom:
-		MVI A,09H;  ; Switch to OPTROM
-		OUT 0E8H; 	
-		
-		;CALL initserport ;Init the serial port
-		NOP
-		NOP
-		NOP
-;Calculate Checksum over complete OPTROM 0-07FFFH
-		LXI H, 0  ; Start of ROM
-dumpromloop:
-		MOV A,M   ; Get byte
-		CALL putchserport
-		INX  H    ; Point to next byte
-		MOV A,H   ; Test count for 0: 4
-		SBI 080H  ;
-		ORA L     ; Test lower byte: 4
-        JNZ dumpromloop  ; If ~0 continue 
+#include "RAMdefs.asm"
 
-		MVI A,08H
-		OUT 0E8H;  ; Return to main ROM	
-		RET
-		
-; ==========================================================
-; Init serial port
-; ==========================================================
-initserport:
-; Configure the serial port, switch to RS232
-		MVI A,024H    ; PIO B configuration (RTS low, DTR low, SPKR=1, Serial=RS232, Keyscan col 9 enable)
-		OUT PIOB      ; Set PIO chip port B configuration	
-
-; Set baud rate 19200 using PIO Timer	
-		MVI A,008H
-		OUT PIOT1     ; BCH Timer 0
-		MVI A,040H
-		OUT PIOT2	  ; BDH Timer 1
-		MVI A,0C3H
-		OUT PIOCR	  ; B8H Control Reg
-		
-; Configure UART Chip
-; B11100: 8bits + No Parity + 1 stop
-		MVI A,01CH
-		OUT UARTmode  ; D8H
-		RET
-		
-; ==========================================================
-; Put Char in A to serial port
-; ==========================================================
-putchserport:
-		PUSH PSW       ; Save A
-putchserportwait:
-		IN UARTmode    ; D8H	
-		ANI 010H       ; TX Buffer empty - High buffer empty
-		JZ putchserportwait ; Wait for TX buffer to empty		
-		POP PSW        ; Restore A
-		OUT UARTsend   ; C8H
-		RET	
-			
-dumpromend:
-sizerom .equ ((dumpromend + 1) - dumprom) + 3
-
-		.end
+	.end
